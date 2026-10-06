@@ -14,8 +14,10 @@ and hides the captions over its window. Never hand-place one in `index.html`.
 
 - **The key sentence of a beat.** The claim, the turn, the line you would quote. Not
   setup, not a list, not the CTA.
-- **2-4 per reel.** Fewer than 2 reads as an accident. On every sentence they stop
-  meaning anything (the build warns above 4).
+- **5-7 per reel** (a ~45-60 s monologue). Fewer reads thin; on every sentence they stop
+  meaning anything (the build warns above 8).
+- **The window ends where the headline's words end.** Captions are hidden under it, so any
+  other word spoken inside the window is never seen (the build names it and says where to end).
 - **Never more than one on screen.** Overlapping windows stop the build.
 - **On the speaker, not on a designed moment.** A headline sits over the talking head (the
   chest). Over a full-frame graphic the graphic itself carries the words.

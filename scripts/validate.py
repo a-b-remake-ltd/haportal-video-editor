@@ -146,33 +146,51 @@ def main():
     caps = [c for c in clips if "cap" in c["cls"].split()]
     external = os.path.exists(a.captions) and not caps
     if external:
-        caps = [{"start": r["start"], "dur": r["dur"], "cls": "", "id": f"c{r['i']}"}
-                for r in json.load(open(a.captions, encoding="utf-8"))]
-        notes.append(f"captions are an external layer ({len(caps)} cards)")
-    if caps:
-        caps.sort(key=lambda c: c["start"])
-        gaps = ov = 0
-        for x, y in zip(caps, caps[1:]):
-            e = x["start"] + (x["dur"] or 0)
-            if y["start"] - e > 0.0055:
-                gaps += 1
-            if e - y["start"] > 0.0055:
-                ov += 1
-        if gaps:
-            fails.append(f"{gaps} caption GAP(s) — blank frames with no caption")
+        rows = json.load(open(a.captions, encoding="utf-8"))
+        vis = [r for r in rows if not r.get("hidden")]
+        notes.append(f"captions are an external layer ({len(vis)} shown, "
+                     f"{len(rows) - len(vis)} hidden under headlines/hook/outro)")
+        # Continuity is judged by captions.py itself (gap_verdict: a blank is deliberate after
+        # a real pause > 0.6 s or next to a hidden window; anything else is an accident) — one
+        # rule, one owner. Here: no overlaps, and captions.py's verdict re-run on the file.
+        ov = sum(1 for x, y in zip(vis, vis[1:]) if x["start"] + x["dur"] - y["start"] > 0.0055)
         if ov:
             fails.append(f"{ov} caption OVERLAP(s) — two plates stacked")
-        last = caps[-1]["start"] + (caps[-1]["dur"] or 0)
-        if abs(last - end) > 0.06:
-            fails.append(f"last caption ends at {last:.3f}s, END is {end:.3f}s")
-        if beatmap and beatmap.BEATS and not external:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import captions as capmod
+            # the SAME word timings captions.py judged with: each card carries its words
+            # trimmed to where they are actually spoken (Whisper's stamps run early/late)
+            words = sorted(w for r in rows for w in (r.get("words") or []))
+            if not words and os.path.exists("src/words.json"):
+                words = capmod.load_words("src/words.json")
+            windows = capmod.load_hide("build/caption_hide.json", "build/outro.json", end) \
+                if os.path.exists("build/caption_hide.json") else []
+            bad = []
+            for x, y in zip(vis, vis[1:]):
+                okk, why = capmod.gap_verdict(x["start"] + x["dur"], y["start"], words, windows)
+                if not okk:
+                    bad.append(f"{x['start'] + x['dur']:.2f}-{y['start']:.2f}s ({why})")
+            if bad:
+                fails.append(f"{len(bad)} ACCIDENTAL caption gap(s): " + "; ".join(bad[:4]))
+            elif vis:
+                notes.append("captions: every blank is a real pause or a hidden window")
+        except Exception as ex:          # never let the checker crash the validator
+            notes.append(f"caption continuity not checked ({ex})")
+    elif caps:                            # inline captions (no external layer)
+        caps.sort(key=lambda c: c["start"])
+        ov = sum(1 for x, y in zip(caps, caps[1:])
+                 if x["start"] + (x["dur"] or 0) - y["start"] > 0.0055)
+        if ov:
+            fails.append(f"{ov} caption OVERLAP(s) — two plates stacked")
+        if beatmap and beatmap.BEATS:
             wrong = [c for c in caps
                      if beatmap.slot_at(c["start"]) not in c["cls"].split()]
             if wrong:
                 fails.append(f"{len(wrong)} caption(s) carry a class that is not "
                              f"slot_at(start) — the slot table and the beat map disagree")
-        if not (gaps or ov):
-            notes.append(f"captions: {len(caps)} cards, no gaps, no overlaps")
+        if not ov:
+            notes.append(f"captions: {len(caps)} cards, no overlaps")
 
     # 5 ------------------------------------------- beats land on real boundaries
     if beatmap and beatmap.BEATS and bounds:

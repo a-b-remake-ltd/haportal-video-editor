@@ -494,13 +494,19 @@ def main():
     # to the segment boundary; never inside a hidden window; strictly increasing.
     starts = []
     prev_vis = None
+    prev_any = None          # the previous card's first word, hidden or not
     for k, c in enumerate(cards):
         w0 = c[0][0]
         if hidden[k]:
             starts.append(snap(w0))
+            prev_any = w0
             continue
         b = max([x for x in bounds if x <= w0 + 0.20], default=None)
-        first_of_segment = b is not None and (prev_vis is None or prev_vis < b - 1e-6)
+        # first card of a segment = no earlier card (visible OR hidden) since the boundary.
+        # Comparing only with visible cards made the first card after a hidden window snap
+        # all the way back to the segment start (0 s on an uncut take).
+        first_of_segment = b is not None and (prev_any is None or prev_any < b - 1e-6)
+        prev_any = w0
         t = b if first_of_segment else max(w0 - lead, b if b is not None else 0.0)
         t = snap(t)
         win = next(((x, y) for x, y in windows if x - 1e-6 <= t < y - 1e-6), None)

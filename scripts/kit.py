@@ -200,7 +200,9 @@ def load_framing(root="."):
 
 # ======================================================================= text
 _LATIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#%/:'’\-]*")
-_DASH = re.compile(r"(?<!\d)[\-–—](?!\d)|(?<=\d)[–—](?=\d)")
+# A dash used as punctuation. NOT: a number range (10-20), or the hyphen that joins a Hebrew
+# prefix letter to a Latin word or a number ("ה-AI", "ב-2026", "מ-100"): that is spelling.
+_DASH = re.compile(r"(?<![\d\u05d0-\u05ea])[\-–—](?!\d)|(?<=\d)[–—](?=\d)|[–—]")
 
 
 def text(s, ctx=None):
@@ -600,8 +602,11 @@ def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None
     return Html(f'<div class="kt-wid kt-glass {cls}" id="{wid}"{style}>{head}{body}</div>')
 
 
-def panel(s, body, name="p", top=None, left=None, width=None, cls="kt-glass"):
-    """A free-positioned surface (glass by default) for things that are not a sky widget."""
+def panel(s, body, name="p", top=None, left=None, width=None, cls="kt-glass", t_in=None,
+          enter="fade"):
+    """A free-positioned surface (glass by default) for things that are not a sky widget.
+    It starts hidden (CSS) and ENTERS on its own at `t_in` (default: the scene start) with
+    `enter` = fade | pop | drop | none — a hidden panel nobody animates in is a silent blank."""
     st = []
     if top is not None:
         st.append(f"top:{r3(top)}px")
@@ -610,7 +615,15 @@ def panel(s, body, name="p", top=None, left=None, width=None, cls="kt-glass"):
     if width is not None:
         st.append(f"width:{r3(width)}px")
     style = f' style="{";".join(st)}"' if st else ""
-    return Html(f'<div class="kt-panel {cls}" id="{s.uid(name)}"{style}>{body}</div>')
+    pid = s.uid(name)
+    t = s.start if t_in is None else s.at(t_in)
+    if enter == "pop":
+        s.pop("#" + pid, t)
+    elif enter == "drop":
+        s.drop("#" + pid, t)
+    elif enter == "fade":
+        s.fade("#" + pid, t, 0.25, 0, 1)
+    return Html(f'<div class="kt-panel {cls}" id="{pid}"{style}>{body}</div>')
 
 
 def card(s, body, head, meta=None, meta_tone="", name="card"):
@@ -1467,7 +1480,9 @@ class HookCard(Scene):
         import moments
         gw = ctx.G["safe"][2] - ctx.G["safe"][0]
         w100 = moments._tw(str(self.big), 100, 800) / 100.0
-        size = int(min(140, 0.98 * gw / max(0.1, w100) / 1.04))
+        # 0.90: the width model runs a few % short on heavy Hebrew (a real title measured
+        # 886 px where the model said 864) and the title drifts to 104 %
+        size = int(min(140, 0.90 * gw / max(0.1, w100) / 1.04))
         fs = f' style="font-size:{size}px"' if size < 140 else ""
         self.parts = [card(self, "".join(self._body), self.head, self.meta, self.meta_tone),
                       f'<div class="kt-hbigw"><div class="kt-hbig kt-grad" id="{tid}"{fs}>'

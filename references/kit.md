@@ -130,7 +130,7 @@ Enters at `t_in` (default scene start) with `drop` | `slide` | `pop` | `none`, l
 
 ```python
 k.card(s, body, head, meta=None, meta_tone="")      # the dark hook card (used by hook_card)
-k.panel(s, body, top=..., left=..., width=...)       # a free-positioned glass surface
+k.panel(s, body, top=..., left=..., width=..., t_in=None, enter="fade")  # free-positioned; enters on its own (fade|pop|drop|none)
 ```
 
 ### State and status

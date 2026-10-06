@@ -65,7 +65,15 @@ def mark(item, good, note=""):
 
 def check_dead_space(aroll):
     """Never pass -v error here — it suppresses silencedetect output entirely and the
-    probe comes back looking like a missing file."""
+    probe comes back looking like a missing file.
+
+    A take kept WHOLE (cut_aroll.py --whole: an AI avatar or a clean single take) keeps the
+    speaker's own pauses on purpose — cutting frames out of an avatar makes it jump — so
+    pauses are reported, not failed, there."""
+    whole = False
+    if os.path.exists("src/bounds.json"):
+        bj = json.load(open("src/bounds.json"))
+        whole = len(bj.get("segments", [])) == 1 and "fps" in bj
     out = hfcfg.run(["ffmpeg", "-nostdin", "-i", aroll,
                      "-af", "silencedetect=noise=-33dB:d=0.3", "-f", "null", "-"]).stderr
     starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", out)]
@@ -77,7 +85,8 @@ def check_dead_space(aroll):
     bad = [(t, d) for t, d in hits if d > 0.42 and (total - (t + d)) > 0.10]
     tail = [(t, d) for t, d in hits if (total - (t + d)) <= 0.10]
     if bad:
-        issues.append("DEAD SPACE in %s: %s" % (
+        (warns if whole else issues).append(("kept-whole take, natural pauses: " if whole else "")
+                                            + "DEAD SPACE in %s: %s" % (
             os.path.basename(aroll),
             ", ".join(f"{t:.2f}s ({d:.2f}s long)" for t, d in bad)))
     else:
@@ -756,6 +765,9 @@ def on_screen_problems(text):
     allowed; a hyphen glued between letters ("ב-AI", "e-mail") is orthography, not a dash.
     ✓ / ✗ are type, not keyboard emoji."""
     t = RANGE.sub("0", text)
+    # a Hebrew prefix hyphen whose word sits in its own span (an isolated Latin run: the text
+    # node is just "ה-") — spelling, not a dash
+    t = re.sub(r"(?<=[\u05d0-\u05ea])-(?=$|[A-Za-z0-9])", "", t.strip())
     return bool(DASH.search(t)), bool(EMOJI.search(text))
 
 
@@ -833,13 +845,26 @@ def check_density(media_json="media.json", storyboard="storyboard.md"):
         return
     m = json.load(open(media_json, encoding="utf-8"))
     moms = [x for x in m.get("moments", []) if x.get("type") != "punch"]
-    scenes = m.get("scenes", []) or []
-    designed = len(moms) + len(scenes)
+    scenes = list(m.get("scenes", []) or [])
+    # the per-video scenes.py (scripts/scenes.py writes build/scenes.json at build time):
+    # hook-* fragments are the hook world, "punch" is the camera, the hook's cards sit inside
+    # the hook window; everything else is a designed moment
+    built = []
+    if os.path.exists("build/scenes.json"):
+        built = json.load(open("build/scenes.json", encoding="utf-8")).get("scenes", [])
+    hw = next(((float(x["start"]), float(x["end"])) for x in built
+               if str(x.get("id")) == "hook-world"), None)
+    in_hook = lambda x: hw and hw[0] - 0.1 <= float(x["start"]) and float(x["end"]) <= hw[1] + 0.5
+    designed_built = [x for x in built if not str(x.get("id", "")).startswith("hook")
+                      and x.get("id") != "punch" and not in_hook(x)]
+    designed = len(moms) + len(scenes) + len(designed_built)
     heads = len(m.get("headlines", []) or [])
-    hook = bool(m.get("hook")) or any(x.get("type") == "fly" and float(x.get("start", 99)) < 2.0
-                                      for x in moms) \
+    hook = bool(m.get("hook")) or bool(hw) or any(
+        x.get("type") == "fly" and float(x.get("start", 99)) < 2.0 for x in moms) \
         or any("hook" in str(x.get("type", "")) + str(x.get("id", "")) for x in scenes)
-    punch = any(x.get("type") == "punch" for x in m.get("moments", []))
+    punch = any(x.get("type") == "punch" for x in m.get("moments", [])) \
+        or any(x.get("id") == "punch" for x in built)
+    scenes = scenes + built
     w = []
     if not hook:
         w.append("no hook (the frame flying into a designed world in the first ~1 s)")
@@ -851,7 +876,8 @@ def check_density(media_json="media.json", storyboard="storyboard.md"):
         w.append("no punch-ins (scripts/plan_punches.py)")
     cb_declared = os.path.exists(storyboard) and re.search(r"callback|קולבק|תשלום חוזר",
                                                            open(storyboard, encoding="utf-8").read(), re.I)
-    cb = any(x.get("callback") or "callback" in str(x.get("id", "")) for x in moms + scenes)
+    cb = any(x.get("callback") or re.search(r"callback|payoff", str(x.get("id", "")))
+             for x in moms + scenes)
     if cb_declared and not cb:
         w.append("storyboard.md declares a callback but no moment/scene is marked \"callback\"")
     for x in w:

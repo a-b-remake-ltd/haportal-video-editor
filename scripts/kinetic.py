@@ -68,13 +68,14 @@ import hfcfg  # noqa: E402
 import grid  # noqa: E402
 
 FRAME = 0.04
-ROLES = ("thin", "bold", "key", "partner")
+ROLES = ("thin", "bold", "key", "partner", "grad")
 ALIASES = {"t-thin": "thin", "light": "thin", "t-bold": "bold", "white": "bold",
            "t-gold": "key", "gold": "key", "keyword": "key", "kw": "key", "hl": "key",
            "t-ivory": "partner", "tint": "partner"}
 # "+" for bold, not "!": a Hebrew sentence may END on "!" and must not turn bold.
-MARK = {"*": "key", "^": "partner", "+": "bold", "_": "thin"}
-MARKERS = "*^+_~"
+MARK = {"*": "key", "^": "partner", "+": "bold", "_": "thin", "=": "grad"}
+# "=w=" is the gradient closer (the emotional word): electric blue → lavender → pink.
+MARKERS = "*^+_~="
 SMALL = 0.6                                   # a "~" line, relative to a full line
 
 # Per-style look. Sizes are px at 1080 wide for a FULL line; auto-fit only shrinks.
@@ -83,9 +84,11 @@ SMALL = 0.6                                   # a "~" line, relative to a full l
 #   ko:     kit.py word() — opacity/y 14/blur 6 → rest in 0.24 s, line height 1.18.
 #   bold:   the Rollin "בא לי / לעקוב / אחריו" stack — all bold white, keyword coloured.
 STYLES = {
-    "rollin": {"size": 112, "lh": 1.02, "default": "thin", "dur": 0.20,
-               "from": '{ opacity: 0, filter: "grayscale(1) blur(0px)" }',
-               "to": 'opacity: 1, filter: "grayscale(0) blur(0px)"'},
+    # the house look: each word lands from opacity .18 with blur 6 + grayscale to full in
+    # 0.22 s power2.out — no slide, no bounce (the premium-reel spec, §4.2)
+    "rollin": {"size": 112, "lh": 1.06, "default": "thin", "dur": 0.22,
+               "from": '{ opacity: 0.18, filter: "blur(6px) grayscale(1)" }',
+               "to": 'opacity: 1, filter: "blur(0px) grayscale(0)"'},
     "ko":     {"size": 108, "lh": 1.18, "default": "thin", "dur": 0.24,
                "from": '{ opacity: 0, y: 14, filter: "blur(6px)" }',
                "to": 'opacity: 1, y: 0, filter: "blur(0px)"'},
@@ -93,7 +96,8 @@ STYLES = {
                "from": '{ opacity: 0, filter: "grayscale(1) blur(0px)" }',
                "to": 'opacity: 1, filter: "grayscale(0) blur(0px)"'},
 }
-WEIGHT = {"thin": 300, "bold": 800, "key": 800, "partner": 800}
+WEIGHT = {"thin": 200, "bold": 800, "key": 800, "partner": 500, "grad": 800}
+SIZE_WORDS = {"big": 140, "huge": 170}      # the spec's .big / .huge, at 1080 wide
 
 # Where the stack hangs, as the TOP of the block on a 1920-high frame. "chest" is the KO
 # placement (top 980): over the torso, under the face, right-aligned at x 920. KO was shot
@@ -337,6 +341,16 @@ def word_times(words, trans, hl, lead, end_cap, bounds=()):
     end = snap(min(float(end), end_cap))
     if end <= start + FRAME:
         raise SystemExit(f"headline {hl.get('id')}: window {start}-{end} is empty")
+    # Captions are hidden under the headline, so a spoken word inside the window that is
+    # NOT in the headline is never shown anywhere. Say which, and where the window should end.
+    used = {(-k - 1 if k < 0 else k) for k in idx if k is not None}
+    lost = [(i, trans[i]) for i in range(len(trans))
+            if start + 0.02 <= trans[i][0] < end - 0.02 and i not in used]
+    if lost:
+        first = lost[0][1]
+        warns.append(f"spoken word(s) {[w for _, (_, _, w) in lost]} fall inside the window but "
+                     f"are not in the headline — they would never be seen. End it at "
+                     f"{first[0] - 0.02:.2f}s (before \"{first[2]}\") or add them to the text")
 
     # land = spoken start − lead (resolved as the sound arrives), clamped into the window
     times = [None if t is None else max(start, snap(t - lead)) for t in raw]
@@ -377,7 +391,7 @@ body {{ margin:0; background:#000; }}
 .kw {{ display:inline-block; }}
 .ltr {{ unicode-bidi:isolate; direction:ltr; }}
 .ai {{ font-family:"Roboto Slab", serif; letter-spacing:.02em; font-weight:inherit; }}
-.r-thin {{ font-weight:300; }} .r-bold, .r-key, .r-partner {{ font-weight:800; }}
+.r-thin {{ font-weight:200; }} .r-partner {{ font-weight:500; }} .r-bold, .r-key, .r-grad {{ font-weight:800; }}
 </style><div id="stage"></div><div id="out"></div>
 <script>
 const H = {heads};
@@ -513,8 +527,10 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         if b_["start"] < a_["end"] - 1e-6:
             raise SystemExit(f"headlines {a_['id']} ({a_['start']}-{a_['end']}) and {b_['id']} "
                              f"({b_['start']}-{b_['end']}) overlap — never more than one on screen")
-    if len(items) > 4:
-        warnings.append(f"{len(items)} headlines — 2-4 per reel; on every sentence they stop "
+    # house density for a ~45-60 s monologue: 5-7 headlines on the punchiest phrases
+    # (references/storyboard.md). Far more and they stop meaning anything.
+    if len(items) > 8:
+        warnings.append(f"{len(items)} headlines — 5-7 per reel; on every sentence they stop "
                         f"meaning anything")
 
     # ---- size: measure each block at its nominal size, then shrink to the safe width
@@ -523,7 +539,9 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         fam = (b.get("display_family") or b["font_family"]) \
             if it["hl"].get("font") == "display" else b["font_family"]
         it["family"] = fam
-        it["nominal"] = round(float(it["hl"].get("size") or it["S"]["size"]) * W / 1080.0)
+        sz = it["hl"].get("size") or it["S"]["size"]
+        sz = SIZE_WORDS.get(sz, sz) if isinstance(sz, str) else sz
+        it["nominal"] = round(float(sz) * W / 1080.0)
         it["inner"] = inner_html(it)
         fam_key.setdefault(fam, []).append(it)
     for fam, its in fam_key.items():
@@ -721,7 +739,9 @@ CSS = """
       .kh {{ position: absolute; z-index: 45; direction: rtl; text-align: right;
              white-space: nowrap; font-family: var(--brand-font), "Inter", sans-serif;
              --kh-thin: #ffffff; --kh-bold: #ffffff; --kh-key: var(--hl-on-dark);
-             --kh-partner: color-mix(in srgb, var(--hl-on-dark) 55%, #ffffff);
+             --kh-partner: color-mix(in srgb, var(--hl-on-dark) 42%, #ffffff);
+             --kh-grad: linear-gradient(90deg, var(--eblue, #1E8BFF), var(--lav, #C9B8FF) 60%,
+                                        var(--pink, #FF9ECF));
              --kh-shadow: 0 3px 18px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.30); }}
       .kh.f-display {{ font-family: var(--display-font), var(--brand-font), "Inter", sans-serif; }}
       .kh.on-paper {{ --kh-thin: var(--brand-ink); --kh-bold: var(--brand-ink);
@@ -734,10 +754,15 @@ CSS = """
       .kh .kl {{ display: block; position: relative; z-index: 1; }}   /* above the scrim */
       .kh .kl.sm {{ font-size: {sm}em; }}
       .kh .kw {{ display: inline-block; opacity: 0; text-shadow: var(--kh-shadow); }}
-      .kh .r-thin {{ font-weight: 300; color: var(--kh-thin); }}
+      .kh .r-thin {{ font-weight: 200; color: var(--kh-thin); }}
       .kh .r-bold {{ font-weight: 800; color: var(--kh-bold); }}
       .kh .r-key {{ font-weight: 800; color: var(--kh-key); }}
-      .kh .r-partner {{ font-weight: 800; color: var(--kh-partner); }}
+      .kh .r-partner {{ font-weight: 500; color: var(--kh-partner); }}
+      /* the gradient closer: no text-shadow (it would paint THROUGH the clipped background)
+         and no CSS filter (the word reveal tweens `filter` and would erase it) */
+      .kh .r-grad {{ font-weight: 800; background: var(--kh-grad); color: transparent;
+             -webkit-background-clip: text; background-clip: text; text-shadow: none;
+             padding-bottom: .06em; }}
       .kh .ai {{ font-weight: inherit; }}
       /* bright footage behind the stack (measured): a soft dark radial scrim, no edge */
       .kh.scrim::before {{ content: ""; position: absolute; z-index: 0; pointer-events: none;
