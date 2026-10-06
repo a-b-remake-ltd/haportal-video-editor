@@ -265,6 +265,8 @@ def build(cfg, media, bounds, end):
     comp_end = oplan["end"] if oplan else end
     hide = CAPTION_HIDE = CaptionHide(end)
     hide.feed(media.get("hide_captions"), "media.json hide_captions")
+    if oplan:                     # the outro is the brand's moment: no caption over it
+        hide.add(float(oplan["start"]), end, "outro")
 
     def clip(tag, cid, cls, start, dur, group, extra="", inner="", self_close=False,
              limit=None, track=None):
@@ -485,11 +487,10 @@ def build(cfg, media, bounds, end):
     # ------------------------------------------------------------------- CSS
     slots = dict(beatmap.SLOT) if beatmap else {}
     cy = cfg.get("captions", {}).get("center_y")
-    if cy:   # a reference moved the speaker band (clamped into the safe zone upstream)
-        ph = grid.plate_height(b["caption_size"])
-        for k in grid.SPEAKER_SLOTS:
-            if k in slots:
-                slots[k] = round(float(cy) - ph / 2)
+    ph = grid.plate_height(b["caption_size"])
+    for k in grid.SPEAKER_SLOTS:          # speaker slots follow the configured size/band
+        if k in slots:
+            slots[k] = round(float(cy) - ph / 2) if cy else grid.caption_top(G, ph)
     slot_css = "\n".join(
         f'      .cap.{k} {{ top: {v}px; }}'
         for k, v in sorted(slots.items(), key=lambda x: x[1]))

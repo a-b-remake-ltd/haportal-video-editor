@@ -235,8 +235,8 @@ def main():
     wmap = {snap(w[0]): w[2] for w in words}
     for t, f, w, eid in rows:
         print(f"    {t:6.2f}s  scale {f:.2f}  {w:<34} {wmap.get(t, '')}")
-    if len(ts) > 1:
-        gaps = [q - p for p, q in zip(ts, ts[1:])]
+    gaps = [q[0] - p[0] for p, q in zip(rows, rows[1:]) if p[3] == q[3]]   # within a stretch
+    if gaps:
         print(f"  {len(rows)} steps, one every {sum(gaps) / len(gaps):.1f}s on average "
               f"(min {min(gaps):.1f}, max {max(gaps):.1f})")
     print(json.dumps(entries, ensure_ascii=False, indent=1))

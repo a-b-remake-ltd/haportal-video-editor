@@ -205,7 +205,7 @@ def split_cards(words, lang, bounds=(), windows=()):
             c = 1.5
         if j < len(run):
             if is_sticky(last, sticky):
-                c += 1000.0                 # Ben's rule is strict: only when unavoidable
+                c += 1000.0                 # the rule is strict: only when unavoidable
             if last.endswith(","):
                 c -= 0.8
             nxt = core(run[j][2])

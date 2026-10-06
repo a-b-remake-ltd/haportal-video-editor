@@ -618,7 +618,8 @@ def card(s, body, head, meta=None, meta_tone="", name="card"):
     ctx = s.ctx
     mt = f' class="kt-{meta_tone}"' if meta_tone else ""
     m = f"<em{mt}>{text(meta, ctx)}</em>" if meta else ""
-    return Html(f'<div class="kt-hcard" id="{s.uid(name)}"><div class="kt-ch"><span>'
+    # the card may sit under the returning frame for its last 0.38 s: layering is intended
+    return Html(f'<div class="kt-hcard" id="{s.uid(name)}" data-layout-allow-overlap><div class="kt-ch"><span>'
                 f'{text(head, ctx)}</span>{m}</div><div class="kt-cb">{body}</div></div>')
 
 
@@ -638,6 +639,12 @@ def swap(s, items, at=(), tones=None, cls="", name="sw"):
             seq.append((s.at(a[0]), int(a[1])))
         else:
             seq.append((s.at(a), i + 1))
+    for t, _ in seq[1:]:
+        if not s.start <= t <= s.end:
+            # the usual cause: ctx.t() found an EARLIER occurrence (prefix-tolerant matching
+            # hears "שאתם" as "אתם") — anchor it with after=
+            s.ctx.note(f"{s.id}: a state change at {t:.2f}s lies outside the scene "
+                       f"({s.start:.2f}-{s.end:.2f}s) — anchor the word with ctx.t(word, after=...)")
     s.steps("#" + sid, seq)
     h = Html(f'<span class="kt-stk {cls}" id="{sid}">{"".join(kids)}</span>')
     h.id = sid
@@ -749,10 +756,12 @@ def week(s, hit=4, t0=None, step=0.13, pulse_t=None, days=None, name="d"):
     for i, d in enumerate(days):
         did = s.uid(f"{name}{i}")
         hitc = " kt-hit" if i == hit else ""
-        out.append(f'<span class="kt-day" id="{did}"><span>{text(d, s.ctx)}</span>'
-                   f'<i class="kt-lit{hitc}" id="{did}l"><b>{text(d, s.ctx)}</b></i></span>')
+        # the lit layer sits BEHIND the one letter (no duplicate glyph); the letter turns white
+        out.append(f'<span class="kt-day" id="{did}"><i class="kt-lit{hitc}" id="{did}l"></i>'
+                   f'<span id="{did}t">{text(d, s.ctx)}</span></span>')
         if i <= hit:
             s.set(f"#{did}l", {"opacity": 1}, r3(t0 + step * i))
+            s.set(f"#{did}t", {"color": "#ffffff"}, r3(t0 + step * i))
     pt = s.at(pulse_t) if pulse_t is not None else r3(t0 + step * hit + 0.1)
     s.pulse("#" + s.uid(f"{name}{hit}"), pt, 1.2, 0.25)
     return Html(f'<div class="kt-days">{"".join(out)}</div>')
@@ -799,13 +808,17 @@ def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=N
     for t in moves:
         s.sfx("swap_pop", t, "normal", 0.1)
     st = ""
+    if never and never_t is not None and (s.end - 0.3) - (s.at(never_t) + 0.18) < 0.3:
+        ctx.note(f"{s.id}: the stamp lands {s.at(never_t) + 0.18:.2f}s and the widget leaves at "
+                 f"{s.end - 0.3:.2f}s by default — give it ≥ 0.3 s of hold (end the scene later, or "
+                 f"pass t_out to the widget)")
     if never:
         st = stamp(s, never, never_t if never_t is not None else s.end - 0.6, x=150, y=120,
                    rot=-8, size=96)
     cells = "".join(f"<span>{text(d, ctx)}</span>" for d in days)
     boxes = "".join("<i></i>" for _ in days)
     return Html(f'<div class="kt-cal"><div class="kt-cgrid">{cells}</div><div class="kt-cells">{boxes}</div>'
-                f'<div class="kt-evt" id="{eid}" style="{side}:{r3(col * pitch)}px;width:{r3(width)}px">'
+                f'<div class="kt-evt" id="{eid}" style="{side}:{r3(col * pitch)}px;min-width:{r3(width)}px">'
                 f'<b>{text(event, ctx)}</b><small>{lab}</small></div>{st}</div>')
 
 
@@ -978,7 +991,7 @@ def stamp(s, label, t, x=None, y=None, rot=-8, size=96, tone="red", name=None, s
     tone_c = "" if tone == "red" else f" kt-st-{tone}"
     # a zero-size anchor at (x, y) centres the stamp without a CSS transform on the element
     # GSAP rotates and scales (lint: gsap_css_transform_conflict)
-    return Html(f'<div class="kt-stampw" style="left:{r3(x)}px;top:{r3(y)}px"><div class="kt-stamp{tone_c}" '
+    return Html(f'<div class="kt-stampw" data-layout-allow-overlap style="left:{r3(x)}px;top:{r3(y)}px"><div class="kt-stamp{tone_c}" '
                 f'id="{sid}" style="font-size:{size}px">{text(label, s.ctx)}</div></div>')
 
 
@@ -1221,7 +1234,7 @@ def light_leak(s, t, d=1.8, twinkles=14, seed=11, region=None, name="lk"):
 
 
 def streak(s, t, d=0.75, cx=None, cy=None, rx=560, ry=140, tilt=-10, color="#FFFFFF",
-           glow="var(--blue2)", width=5, name="sk"):
+           glow="var(--blue2)", width=7, name="sk"):
     """The Rollin light streak: a bright comet segment orbiting the speaker along a tilted
     ellipse, with a soft glow, in d seconds. Seek-safe: a stroke-dashoffset sweep."""
     ctx = s.ctx
@@ -1235,11 +1248,11 @@ def streak(s, t, d=0.75, cx=None, cy=None, rx=560, ry=140, tilt=-10, color="#FFF
     svg = (f'<svg class="kt-streak" id="{sid}" data-grid="bleed" viewBox="0 0 {ctx.W} {ctx.H}" '
            f'width="{ctx.W}" height="{ctx.H}"><g transform="{tr}">'
            f'<path id="{sid}g" d="{path}" pathLength="100" style="stroke:{glow}" stroke-width="{width * 5}" '
-           f'stroke-opacity=".35" fill="none" stroke-linecap="round" stroke-dasharray="24 176" stroke-dashoffset="24"/>'
+           f'stroke-opacity=".45" fill="none" stroke-linecap="round" stroke-dasharray="30 170" stroke-dashoffset="30"/>'
            f'<path id="{sid}c" d="{path}" pathLength="100" style="stroke:{color}" stroke-width="{width}" '
-           f'fill="none" stroke-linecap="round" stroke-dasharray="18 182" stroke-dashoffset="18"/></g></svg>')
+           f'fill="none" stroke-linecap="round" stroke-dasharray="24 176" stroke-dashoffset="24"/></g></svg>')
     t = s.at(t)
-    for part, a in (("g", 24), ("c", 18)):
+    for part, a in (("g", 30), ("c", 24)):
         s.tween(f"#{sid}{part}", {"strokeDashoffset": a}, {"strokeDashoffset": -100}, t, d, "power1.inOut")
     s.fade("#" + sid, t, 0.08)
     s.sfx("whoosh_high", t, "normal", 0.12)

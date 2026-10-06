@@ -55,7 +55,7 @@ PAGE = """<!doctype html><meta charset="utf-8">
   .cap .p {{ display:inline-block; font-size:{size}px; padding:20px 34px 26px;
              white-space:nowrap; {paint} }}
   .ltr {{ unicode-bidi:isolate; direction:ltr; }}
-  .ai {{ font-family:"Roboto Slab", serif; font-weight:800; letter-spacing:.02em; }}
+  .ai {{ font-family:"Roboto Slab", serif; font-weight:{aiw}; letter-spacing:.02em; }}
 </style>
 <div class="cap"><span class="p">{text}</span></div>"""
 
@@ -291,7 +291,11 @@ def main():
                                 left=g["safe"][0], width=g["safe_width"],
                                 dir=cfg["language"]["direction"], family=b["font_family"],
                                 size=c.get("size", b["caption_size"]),
-                                paint=grid.caption_css(cfg), text=text))
+                                paint=grid.caption_css(cfg), text=text,
+                                # the slab "AI" follows the caption weight (+100: a slab reads
+                                # lighter than a sans at the same weight) — 800 in a 500 line
+                                # looks like an accidental bold
+                                aiw=min(900, int(cfg.get("captions", {}).get("weight", 800)) + 100)))
         shoot(chrome, hp, png, W, H)
         return png
 

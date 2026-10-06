@@ -51,11 +51,14 @@ M = {}          # measurements for --checklist: item -> (True | False | None, no
 
 
 def mark(item, good, note=""):
-    """Record a checklist measurement. An item failing anywhere stays failed."""
+    """Record a checklist measurement. An item failing anywhere stays failed; a measured
+    pass is not downgraded by a "can't tell" from another check; notes accumulate."""
     prev = M.get(item)
-    if prev and prev[0] is False:
-        return
-    if prev and prev[0] is True and good is None:
+    if prev:
+        notes = "; ".join(x for x in (prev[1], note) if x)
+        if prev[0] is False or (prev[0] is True and good is None):
+            good = prev[0]
+        M[item] = (good, notes)
         return
     M[item] = (good, note)
 
@@ -458,7 +461,7 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
         out = []
         for s0, e0, w in ws:
             for t in tok.findall(_html.unescape(str(w))):
-                out.append((t.lower(), s0))
+                out.append((t.lower(), s0, e0))
         return out
 
     heard = run(render, "master")
@@ -472,9 +475,13 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
     def score(a, b):
         sm = difflib.SequenceMatcher(None, [x[0] for x in a], [x[0] for x in b], autojunk=False)
         same = sum(bl.size for bl in sm.get_matching_blocks())
-        diffs = [(a[i1][1] if i1 < len(a) else (b[j1][1] if j1 < len(b) else 0.0),
-                  " ".join(x[0] for x in a[i1:i2]), " ".join(x[0] for x in b[j1:j2]))
-                 for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal"]
+        diffs = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                continue
+            span = a[i1:i2] or b[j1:j2] or a[max(0, i1 - 1):i1]
+            t0, t1 = (span[0][1], span[-1][2]) if span else (0.0, 0.0)
+            diffs.append((t0, t1, " ".join(x[0] for x in a[i1:i2]), " ".join(x[0] for x in b[j1:j2])))
         return same / max(1, len(a)), diffs
 
     pct_w, diffs_w = score(ref, got)
@@ -485,17 +492,21 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
         pct, diffs, vs = pct_c, diffs_c, "the clean A-roll"
     ev = _audio_events()
     lines = []
-    for t, a_, b_ in diffs[:20]:
-        near = [e for e in ev if e[0] - 0.6 <= t <= e[0] + max(0.6, e[1] if e[2] == "sfx" else 0.6)]
+    for t, t1, a_, b_ in diffs[:20]:
+        # an event whose sound overlaps the differing words (±0.3 s); music clips are long,
+        # so for them only a START (a hit, a drop) near the words counts
+        near = [e for e in ev if (e[2] == "sfx" and e[0] - 0.3 <= t1 and e[0] + max(e[1], 0.3) >= t - 0.3)
+                or (e[2] == "music" and t - 0.6 <= e[0] <= t1 + 0.3)]
         near = sorted(near, key=lambda e: abs(e[0] - t))[:3]
         tag = ", ".join(f"{e[2]} {e[3] or e[4]}@{e[0]:.2f}" for e in near) or "no SFX/music event near"
-        lines.append(f"[{t:6.2f}] '{a_ or '∅'}' → heard '{b_ or '∅'}'  ({tag})")
+        lines.append(f"[{t:6.2f}-{t1:6.2f}] '{a_ or '∅'}' → heard '{b_ or '∅'}'  ({tag})")
     M["intelligibility"] = round(100 * pct, 1)
     msg = (f"intelligibility: {100 * pct:.1f} % of the words match {vs}"
            + (f" ({100 * pct_w:.1f} % vs words.json, which carries the corrected spellings)" if base else ""))
     if pct < threshold:
-        issues.append(msg.upper().replace("INTELLIGIBILITY", "INTELLIGIBILITY BELOW 97 %", 1)
-                      + "\n      " + "\n      ".join(lines))
+        issues.append(f"INTELLIGIBILITY BELOW {100 * threshold:.0f} % — " + msg
+                      + " — move the SFX off these words or deepen the duck:\n      "
+                      + "\n      ".join(lines))
     else:
         ok.append(msg)
         if lines:
@@ -853,6 +864,36 @@ def check_density(media_json="media.json", storyboard="storyboard.md"):
     mark(6, True if punch else None, "punch moment present" if punch else "no punches")
 
 
+def check_lint():
+    """HyperFrames lint: 0 errors (missing_local_asset is fatal). Of the warnings, overlaps and
+    missing assets matter; nested-structure and file-size ones may be ignored. The CLI comes
+    from $HYPERFRAMES_CMD, else the project's package.json pin, else npx hyperframes."""
+    import shlex
+    cmd = os.environ.get("HYPERFRAMES_CMD")
+    if not cmd and os.path.exists("package.json"):
+        m = re.search(r"(npx --yes hyperframes@[\d.]+)", open("package.json").read())
+        cmd = m.group(1) if m else None
+    cmd = shlex.split(cmd or "npx --yes hyperframes") + ["lint", "--json"]
+    r = hfcfg.run(cmd)
+    try:
+        d = json.loads(r.stdout[r.stdout.index("{"):])
+    except ValueError:
+        warns.append(f"lint could not run ({' '.join(cmd)}): {r.stderr.strip()[-200:]}")
+        mark(10, None, "lint not run")
+        return
+    errs = [f for f in d.get("findings", []) if f.get("severity") == "error"]
+    loud = [f for f in d.get("findings", []) if f.get("severity") == "warning"
+            and re.search(r"overlap|missing|asset", f.get("code", ""))]
+    if errs:
+        issues.append(f"LINT: {len(errs)} error(s): " + "; ".join(
+            f"{f.get('code')} {f.get('elementId', '')}" for f in errs[:5]))
+    else:
+        ok.append(f"lint: 0 errors, {d.get('warningCount', 0)} warning(s)")
+    for f in loud[:5]:
+        warns.append(f"lint warning that matters: {f.get('code')} — {f.get('message', '')[:120]}")
+    mark(10, not errs, f"lint {len(errs)} error(s)")
+
+
 CHECKLIST = [
     (1, "Two-model transcription diffed; caption text corrected to the intended script; changes listed"),
     (2, "Framing map written; every element inside the grid's safe zone; captions on a high-contrast band"),
@@ -924,6 +965,7 @@ def main():
     ap.add_argument("--no-intelligibility", action="store_true",
                     help="skip re-transcribing the master (it takes ~30 s per minute)")
     ap.add_argument("--no-chrome", action="store_true", help="skip the Chrome-based checks")
+    ap.add_argument("--lint", action="store_true", help="also run `hyperframes lint` (0 errors)")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
@@ -943,6 +985,8 @@ def main():
         check_grid(cfg, a.html)
         check_heavy_overlays(a.html)
     check_fonts(cfg, a.html)
+    if a.lint:
+        check_lint()
     if a.transcript:
         check_words_covered(a.captions, a.transcript, cfg["language"].get("typos"))
     if a.aroll:

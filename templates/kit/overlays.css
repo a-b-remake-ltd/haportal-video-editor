@@ -11,6 +11,7 @@
       .kt-spark { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #EAF4FF;
         box-shadow: 0 0 14px 6px rgba(var(--blue2-rgb), .7); opacity: 0; }
       .kt-pup, .kt-streak { position: absolute; left: 0; top: 0; overflow: visible; }
+      .kt-streak { filter: drop-shadow(0 0 12px rgba(var(--blue2-rgb), .9)); }
       .kt-str { stroke: rgba(255,255,255,.92); stroke-width: 3.5; stroke-dasharray: 100; stroke-dashoffset: 100; }
       .kt-leak { position: absolute; inset: -200px; mix-blend-mode: screen; opacity: 0;
         background: radial-gradient(40% 35% at 30% 20%, rgba(255,214,150,.75), rgba(255,170,110,.25) 45%, rgba(255,150,90,0) 70%); }

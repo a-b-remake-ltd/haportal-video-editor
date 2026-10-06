@@ -340,6 +340,14 @@ def validate(frags, ctx, media):
             if a + 1e-6 < t < b - 1e-6 and not (owner and owner.get("punch_ok")):
                 raise kit.KitError(f"scenes: punch step at {t:.2f}s ({src}) is inside {i}'s "
                                    f"camera move ({a:.2f}-{b:.2f}) — move it to the move's end")
+    # premium restraint (spec §0.1): never two widgets competing for the sky
+    wids = sorted((float(f["start"]), float(f["end"]), f["id"]) for f in frags
+                  if 'class="kt-wid' in f.get("html", "") or 'class="kt-page' in f.get("html", ""))
+    for i, (a0, a1, ia) in enumerate(wids):
+        for b0, b1, ib in wids[i + 1:]:
+            if b0 < a1 - 0.35:
+                ctx.note(f"{ia} and {ib} are both up {b0:.2f}-{min(a1, b1):.2f}s — two widgets "
+                         f"compete; one idea on screen at a time (end the first, or move one)")
     # density (spec §3.1): something designed every few seconds
     vis = [f for f in frags if f.get("html")]
     if end and vis:
@@ -446,14 +454,14 @@ def plan(cfg, media, end, beatmap=None, bounds=(), root=".", quiet=False):
     n_heavy = validate(frags, ctx, media)
 
     # ---- elements + lanes (interval colouring: overlapping scenes never share a track)
-    # Sequential scenes alternate between two lanes (like build_index's Tracks), so no single
-    # Studio track gets crowded; overlapping ones take the next free lane.
-    elements, lanes, k = [], [0.0, 0.0], 0
+    # Sequential scenes rotate over four lanes, so no single Studio track gets crowded
+    # (lint: timeline_track_too_dense); overlapping ones take the next free lane.
+    elements, lanes, k = [], [0.0] * 4, 0
     for f in frags:
         if not f.get("html"):
             continue
         a, b = float(f["start"]), float(f["end"])
-        order = [k % 2, (k + 1) % 2] + list(range(2, len(lanes)))
+        order = [(k + j) % 4 for j in range(4)] + list(range(4, len(lanes)))
         lane = next((i for i in order if lanes[i] <= a + 1e-6), None)
         if lane is None:
             lanes.append(0.0)
@@ -530,37 +538,44 @@ def plan(cfg, media, end, beatmap=None, bounds=(), root=".", quiet=False):
 # ===================================================================== example
 EXAMPLE = r'''"""scenes.py — the designed moments of THIS video (scripts/scenes.py, references/kit.md).
 
-Invented example script (replace with this video's lines; keep the method):
-  0.0  "everyone tells you to wait for the right moment"      hook opener + world
-  1.1  "for the right job, for the right partner,"             card: inbox, empty
-  2.9  "for someone to finally say yes"                        card: approval pending
-  4.6  (return)
-  5.0  "I waited three years"                                  sky: progress crawling
-  8.2  "and then I just pressed send"                          dialog: hand taps "send"
+Storyboard (an invented example script; replace with this video's lines, keep the method):
+  0.0-1.4  "everyone tells you to wait"                  opener on the chest, word by word
+  1.4      (hook)                                        the frame flies away into the world
+  1.4-3.6  "for the right moment, for the right job"     card: an inbox that stays empty
+  3.6-6.0  "for someone to finally say yes"              card: people picked, "you" left waiting
+  5.6      (return)                                      back to the speaker through the tint
+  6.3-8.0  "I waited three years"                        sky: a progress bar crawling 1% → 2%
+  8.2-10.5 "and then I just pressed send"                approval dialog, the hand taps "send"
 """
 
 
 def build(ctx):
     k = ctx.kit
     out = []
-    # punch-ins first: the hook lands on the punch that is active at its end
+    # punch-ins first: the hook lands on the punch active at its landing
     out.append(ctx.punch([(ctx.t("waited"), 1.08), (ctx.t("pressed"), 1.12)]))
 
-    # ---- the hook: opener on the chest, frame flies away, 2 cards, frame flies back
-    a = k.hook_card(ctx, "hk-a", ctx.t("for"), ctx.t("someone"), big="the right job",
+    # ---- the hook
+    a = k.hook_card(ctx, "hk-a", ctx.t("for"), ctx.t("for", 3), big="the right job",
                     head="Inbox", meta="Updated now")
     a.add(k.empty(a, "No new offers", "still waiting"))
-    b = k.hook_card(ctx, "hk-b", ctx.t("someone"), ctx.te("yes") + 0.5, big="say yes",
-                    head="Request", meta="Pending", meta_tone="wait")
-    b.add(k.avatars(b, [ctx.t("finally"), ctx.t("say")], odd="you", odd_t=ctx.t("yes")))
-    out += k.hook(ctx, [a, b], out=ctx.te("moment") + 0.02, back=ctx.te("yes") + 0.1,
+    b = k.hook_card(ctx, "hk-b", ctx.t("for", 3), ctx.te("yes") + 0.48, big="say yes",
+                    head="Team pick", meta="Pending", meta_tone="wait")
+    b.add(k.avatars(b, [ctx.t("finally"), ctx.t("say")], odd="you?", odd_t=ctx.t("yes")))
+    out += k.hook(ctx, [a, b], out=ctx.te("wait") + 0.02, back=ctx.te("yes") + 0.1,
                   intro="everyone tells you / to *wait*")
 
     # ---- three years crawling
-    s = ctx.scene("yrs", ctx.t("waited"), ctx.te("years") + 0.6)
+    s = ctx.scene("yrs", ctx.t("waited"), ctx.te("years") + 0.5)
     s.add(k.widget(s, k.progress(s, "Progress", [(s.start, "1%"), (ctx.t("years"), "2%")],
-                                 [(s.start + 0.2, 0.3, 0.01), (s.start + 0.5, 1.4, 0.02)], warm=True),
+                                 [(s.start + 0.2, 0.3, 0.01), (s.start + 0.5, 1.2, 0.02)], warm=True),
                    title="Three years", sub="almost there…"))
+    out.append(s.done())
+
+    # ---- the comic twist: you approve yourself
+    s = ctx.scene("send", ctx.t("and"), ctx.te("send") + 0.6)
+    s.add(k.widget(s, k.dialog(s, "Send request", "Waiting for approval…", "Sent by you",
+                               "Wait", "Send", "Sent", show_t=ctx.t("just"), tap_t=ctx.t("send"))))
     out.append(s.done())
     return out
 '''

@@ -124,8 +124,10 @@ def slot_top(cfg, beatmap, t):
     else:
         kind, top = "std", caption_top(from_config(cfg), plate_h)
     cy = cfg.get("captions", {}).get("center_y")
-    if cy and kind in SPEAKER_SLOTS:
-        top = round(float(cy) - plate_h / 2)
+    if kind in SPEAKER_SLOTS:
+        # speaker slots always follow the CONFIGURED caption size: the beats.py stub bakes a
+        # number at import time and cannot know it
+        top = round(float(cy) - plate_h / 2) if cy else caption_top(from_config(cfg), plate_h)
     return top
 
 

@@ -4,30 +4,43 @@
 
 ## The spec
 
-- **Every word spoken, verbatim.** Never drop or paraphrase. Fix the transcriber's typos
-  (keep a per-project `TYPOS` map — every language has a set of words Whisper reliably
-  mangles).
-- **One line, 3–4 words. Never two lines.** (`captions.max_words`; a reference may lower it.)
-- **Never end a card on a sticky word** (a preposition, conjunction or bare number). It moves
-  to the next card. See `references/hebrew.md`.
-- **Black text on a translucent white plate — no stroke, ever.** That is the house style
-  (`captions.style: "plate"`). An analysed reference may switch it to `"shadow"`: white
-  text, soft shadow, no box, still no stroke.
+The default is the premium motion-edit card. A user who never sends a note gets this:
+
+- **1-3 words per card, one line, hard swap.** The next card replaces the previous one within
+  a frame. No fade, no pop, no scale. (`captions.max_words: 3`.)
+- **White, 62 px, weight 500, soft shadow, no box** (`captions.style: "shadow"`,
+  `brand.caption_size: 62`, `captions.weight: 500`): `text-shadow: 0 2px 12px rgba(0,0,0,.6)`,
+  centred in `left:60px; right:140px` (x 500). It reads on a dark shirt and stays out of the
+  way of the headlines and designed moments, which carry the emphasis.
+- **On a high-contrast band.** The grid's band is y 1110-1190. `framing_map.py` measures the
+  speaker: when that band lands on the chin, the beard or straddles the collar, it moves onto
+  the chest (`--apply` writes `captions.center_y` and the reason into config.json). When the
+  band is bright (p75 luma > 0.6) white type will not read: switch to `"plate"`.
+- **Every word spoken, verbatim, in its INTENDED spelling.** Never drop or paraphrase. Fix
+  transcription errors, an AI avatar's mispronunciations and colloquial forms through
+  `src/corrections.json` (`scripts/xcheck.py`), never by hand in captions.json.
+- **Never end a card on a sticky word** (a preposition, conjunction or bare number), never open
+  one on a word that leans back ("הזאת", "מאוד", "מלאכותית"). See `references/hebrew.md`.
+- **"AI" in Roboto Slab** (`class="ltr ai"`), at the caption weight + 100: in a sans face the
+  capital I reads as a lower-case l.
+- **No dashes** in on-screen text (a number range is the only exception; a prefix hyphen as in
+  "ב-AI" is spelling, not a dash) and **no emoji**. `preflight_qa.py` fails both.
+- **Hidden where the frame belongs to something else:** the hook world, every kinetic headline
+  window (the headline IS the caption), designed moments marked `hide_captions`, the outro.
+
+`"plate"` (black type on a translucent white plate, weight 800) stays available for bright or
+busy footage, or when a reference uses it:
 
 ```css
-.cap  { position:absolute; left:0; right:0; top:<slot>px; text-align:center;
-        direction:<rtl|ltr>; font-family:"<BrandFont>", "Inter", sans-serif;
-        font-weight:800; line-height:1.0; }
-.cap .p { display:inline-block; color:#0a0a0a; font-size:70px;
+.cap .p { display:inline-block; color:#0a0a0a; font-size:70px; font-weight:800;
           background:rgba(255,255,255,0.82); border-radius:22px;
-          padding:20px 34px 26px; box-shadow:0 10px 34px rgba(0,0,0,0.42);
-          white-space:nowrap; }
+          padding:20px 34px 26px; box-shadow:0 10px 34px rgba(0,0,0,0.42); white-space:nowrap; }
 ```
 
-**The plate must HUG the text.** Wrap the line in an `inline-block` span inside the centred
+**A plate must HUG the text.** Wrap the line in an `inline-block` span inside the centred
 `.cap` div; never style the full-width div, or you get a band across the frame.
 
-A ~56 s reel lands around **48 cards**.
+A ~55 s reel lands around **50-60 cards** at 1-3 words.
 
 ---
 
@@ -53,14 +66,15 @@ Generate them, never hand-write them. `scripts/captions.py` implements the split
    tail of one sentence and the head of the next.
 3. **Soft break** after a comma, or before a clause opener (keep a small per-language
    `CLAUSE_OPENERS` set), once the card already has ≥2 words.
-4. **4-word ceiling.**
+4. **Word ceiling: `captions.max_words` (3 by default).** Hidden-window edges are hard
+   breaks too: a card is either entirely under a headline or entirely outside it.
 5. **No 1-word orphans.** Fold back if the previous card has room; otherwise lend it the
    previous card's last word — **3+2 beats 4+1**.
 6. **Never split a locked phrase** (a two-token brand name, a compound term).
 
 ### Measure every plate's WIDTH at build time
 
-`white-space: nowrap` plus a long 4-word card can exceed the frame. Render each caption in the
+`white-space: nowrap` plus a long card can exceed the frame. Render each caption in the
 real brand face with headless Chrome (`getBoundingClientRect`) and fail or downsize anything
 wider than the safe zone (**880 px**). See `scripts/fit_captions.py`.
 
@@ -131,38 +145,45 @@ From that one structure, derive:
 
 ## Timing
 
-### A caption must never still be up once the next sentence has started
+`scripts/captions.py` writes every time; never type one.
 
-Two rules, both required:
+1. **A card starts on its first word's start** (`captions.lead`, default 0). The first card
+   of a cut SEGMENT snaps back to the segment boundary instead: word starts run 0.03-0.15 s
+   late, so without the snap the previous card lingers over the new sentence.
+2. **It ends at the next card's start** (minus 0.005 s: the clip window is inclusive at both
+   ends, so without it both cards paint the boundary frame) **or at the start of the next
+   hidden window**, whichever comes first.
+3. **Pause trim:** when a pause longer than `captions.pause_trim` (0.6 s) follows its last
+   word, the card ends at last-word-end + `captions.pause_tail` (0.3 s). The screen is then
+   empty during the silence: a DELIBERATE gap.
+4. **No visible card starts inside a hidden window.** Asserted in captions.py, in
+   caption_layer.py and in preflight_qa.py. Cards whose words fall inside a window are kept
+   in captions.json with `"hidden": true`, so every spoken word stays accounted for.
 
-**(a)** The **first** card of each sentence starts at the **segment boundary**, not at the
-transcriber's first-word stamp. Whisper reports word starts 0.03–0.15 s late, so the previous
-card otherwise lingers over the new sentence.
+**Pauses are read from the audio, not the transcript.** Whisper's word stamps are contiguous:
+it folds every pause into a neighbouring word (measured on an AI-avatar take: a word stamped
+25.72-26.92 s whose voice is 26.56-26.92). captions.py reads the A-roll's voice energy
+(100-900 Hz, 10 ms windows) and shrinks each word to its longest voiced run, so the pause
+rule fires and the next card arrives on the real onset. `--aroll ""` turns it off.
 
-**(b)** Mid-sentence cards get a **0.06 s lead**: `start = word_start − 0.06`, clamped to the
-segment boundary.
+**Order of operations.** build_index.py needs the cards' words (headline timing) and writes
+`build/caption_hide.json`; captions.py needs those windows. So: captions.py → build_index.py
+→ captions.py again → caption_layer.py. If you forget the second run, caption_layer.py still
+does the right thing (it trims a card to the words spoken before a window and RE-STARTS it
+after the window with only the words not yet spoken, never replaying a half card) and says
+captions.json is stale; preflight_qa.py fails until you re-run captions.py.
 
-Measure the lateness per shoot — compare each segment's designed onset (boundary + lead)
-against the transcriber's first word and take the mean.
+### Gaps: deliberate vs accidental
+
+A blank stretch between two visible cards passes only when every part of it that is not under
+a hidden window is a real pause: no word spoken there for more than 0.08 s, the silence longer
+than `pause_trim`, and the card before kept its `pause_tail`. Silence right next to a hidden
+window also passes (the headline cut, the next card waits for its word). Anything else fails:
+a caption blinking off between words, or a spoken word with nothing on screen.
+`captions.gap_verdict()` is the one implementation; captions.py and preflight_qa.py share it.
 
 Then **snap every layout beat to a caption start**, so a visual cut and its caption always
-change on the same frame. Never the reverse — never move a caption to fit a layout beat.
-
-**Verify:** for each of the N segment boundaries, assert that some caption starts exactly
-there.
-
-### Zero dead space between captions — never a single blank frame
-
-Put **all** captions on **one** track index and make each duration exactly
-`next_start − this_start` (the last one runs to the composition end). Same track = the renderer
-hands off cleanly, so you get no gap and no overlap.
-
-**Do not end captions early to dodge overlap** — that leaves blank frames.
-
-**But subtract 0.005 s from every duration.** The clip window is inclusive at both ends, so at
-`t = next_start` both cards render and you get one frame of stacked text. Frame times are
-0.04 s apart, so 0.005 s can never open a gap, and the boundary frame belongs to the next card
-alone. Verify by snapshotting a boundary at −0.04 / exact / +0.04.
+change on the same frame. Never the reverse.
 
 ---
 
