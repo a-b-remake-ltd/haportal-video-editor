@@ -40,17 +40,20 @@
     "accent_alt": "#3d8bff",
     "accent_warm": "#D97757",
     "good": "#35e06b",
-    "caption_size": 70,
+    "caption_size": 62,
     "caption_plate": "rgba(255,255,255,0.82)",
     "caption_ink": "#0a0a0a"
   },
 
   "captions": {
-    "_comment": "style: plate (black on a white plate, house default) | shadow (white, soft shadow). center_y is set by apply_style.py from a reference, clamped to the grid.",
-    "style": "plate",
-    "max_words": 4,
-    "weight": 800,
-    "shadow_color": "#ffffff"
+    "_comment": "Default: 1-3 words, hard swap, white 62 px weight 500, soft shadow (style shadow). style plate = black on a white plate, for bright or busy footage. A card starts on its first word (lead 0), ends at the next card or the next hidden window, and is trimmed to last word + pause_tail when a pause longer than pause_trim follows. center_y is written by framing_map.py --apply (or apply_style.py from a reference), clamped to the grid.",
+    "style": "shadow",
+    "max_words": 3,
+    "weight": 500,
+    "shadow_color": "#ffffff",
+    "lead": 0.0,
+    "pause_trim": 0.6,
+    "pause_tail": 0.3
   },
 
   "style": {

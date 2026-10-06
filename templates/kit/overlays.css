@@ -1,0 +1,27 @@
+      /* ==== KIT full-frame overlays: bars, strings, light, bricks, glow ====
+         Decoration that is meant to bleed carries data-grid="bleed". Particles are solid
+         colours with a box-shadow glow: radial gradients in bulk blacken the capture (spec 9.6). */
+      .kt-full { position: absolute; inset: 0; }
+      .kt-bar { position: absolute; top: 0; width: 34px; height: 100%; border-radius: 17px;
+        background: linear-gradient(90deg, #2A2F38, #9AA3B2 40%, #F2F5FA 52%, #7D8696 64%, #262B33);
+        box-shadow: 0 0 30px rgba(0,0,0,.45); }
+      .kt-cross { position: absolute; left: 30px; right: 30px; height: 30px; border-radius: 15px;
+        background: linear-gradient(180deg, #2A2F38, #A9B2C1 45%, #EEF2F8 55%, #3A404B);
+        box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+      .kt-spark { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #EAF4FF;
+        box-shadow: 0 0 14px 6px rgba(var(--blue2-rgb), .7); opacity: 0; }
+      .kt-pup, .kt-streak { position: absolute; left: 0; top: 0; overflow: visible; }
+      .kt-str { stroke: rgba(255,255,255,.92); stroke-width: 3.5; stroke-dasharray: 100; stroke-dashoffset: 100; }
+      .kt-leak { position: absolute; inset: -200px; mix-blend-mode: screen; opacity: 0;
+        background: radial-gradient(40% 35% at 30% 20%, rgba(255,214,150,.75), rgba(255,170,110,.25) 45%, rgba(255,150,90,0) 70%); }
+      .kt-twk { position: absolute; width: 14px; height: 14px; border-radius: 50%; opacity: 0; background: #FFF6E6;
+        box-shadow: 0 0 16px 7px rgba(255,214,150,.75); }
+      .kt-brk { position: absolute; border-radius: 12px; opacity: 0;
+        background: linear-gradient(180deg, var(--blue), var(--eblue));
+        box-shadow: 0 10px 24px rgba(6,18,36,.35), inset 0 2px 0 rgba(255,255,255,.35); }
+      .kt-bglow { position: absolute; opacity: 0;
+        background: radial-gradient(60% 55% at 50% 60%, rgba(255,255,255,.95), rgba(var(--eblue-rgb), .5) 60%, rgba(var(--eblue-rgb), 0)); }
+      .kt-halo { position: absolute; border-radius: 50%; opacity: 0; mix-blend-mode: screen;
+        background: radial-gradient(closest-side, rgba(var(--blue2-rgb), .55), rgba(var(--eblue-rgb), .18) 60%, rgba(var(--eblue-rgb), 0)); }
+      .kt-ringo { position: absolute; border-radius: 50%; opacity: 0; border: 5px solid var(--blue2);
+        box-shadow: 0 0 40px 8px rgba(var(--eblue-rgb), .55), inset 0 0 30px rgba(var(--blue2-rgb), .45); }

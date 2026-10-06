@@ -11,8 +11,13 @@ the logo has a round hole big enough, the circle lands EXACTLY in it, which is t
 It is opt-in on purpose: it runs only when a logo exists AND the user said yes (a 16:9
 project deliberately had no outro). Ask first — references/outro.md has the wording.
 
-Three styles, all ≈3.4-4.4 s after speech, all brand-coloured:
-  portal  (default, the signature)  speaker → circle around the face → flies into the logo's
+Four styles, all ≈3.4-4.5 s after speech, all brand-coloured:
+  gate    (default when the logo has a MARK with an opening or a hole — brand_from_logo.py
+          writes logo.mark)  "the frame becomes the logo": the footage closes into a door
+          shaped like the mark's opening (an arched door for an arch, an oval for a ring),
+          flies into it, the mark draws itself around it, the speaker "steps through" into
+          a brand light, and the words slide out from behind the mark. 4.5 s.
+  portal  (default otherwise)  speaker → circle around the face → flies into the logo's
           hole (or onto a brand disc that opens into the logo), hairline, tagline, handle,
           slow push, fade.
   line    a brand hairline turns the page in reading direction (right→left for Hebrew),
@@ -62,7 +67,7 @@ import grid  # noqa: E402
 TEMPLATE_DIR = os.path.join(hfcfg.SKILL_DIR, "templates", "outro")
 
 # Tail after the outro start, per style. The portal runs 4.4 s.
-DURATION = {"portal": 4.4, "line": 3.8, "impact": 3.4}
+DURATION = {"gate": 4.5, "portal": 4.4, "line": 3.8, "impact": 3.4}
 STYLES = tuple(DURATION)
 
 # How far under the SPEECH level each outro cue lands (peak momentary loudness vs the
@@ -135,9 +140,11 @@ def settings(cfg, media=None):
             base["enabled"] = True
     if not base.get("enabled"):
         return None
-    style = base.get("style") or "portal"
-    if style not in STYLES:
-        sys.exit(f"outro.style {style!r} — choose one of {', '.join(STYLES)}")
+    # "auto" (or no style) is resolved in plan() once the brand is loaded: gate when the
+    # logo has a mark with an opening or a hole, portal otherwise.
+    style = base.get("style") or "auto"
+    if style not in STYLES + ("auto",):
+        sys.exit(f"outro.style {style!r} — choose one of {', '.join(STYLES)} or auto")
     base["style"] = style
     return base
 
@@ -239,7 +246,14 @@ def measure_face(aroll, end, W=1080, H=1920):
             for x in range(sx):
                 p = row + x * 3
                 r, g, b = buf[p], buf[p + 1], buf[p + 2]
-                if r > 95 and r > g + 16 and g > b + 6 and 40 < r - b < 130:
+                # RGB rule OR the YCbCr chroma box (Cb 77-127, Cr 137-175): under cool or
+                # side light the RGB rule keeps only the warm half of the face (measured:
+                # the centre landed 100 px off on a sunset-lit shot); chroma is far less
+                # sensitive to the light's colour and level.
+                cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b
+                cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b
+                if (r > 95 and r > g + 16 and g > b + 6 and 40 < r - b < 130) or \
+                        (r > 60 and 77 <= cb <= 127 and 137 <= cr <= 175):
                     mask[y * sx + x] = 1
                     cols[x] += 1
         peak = max(cols) or 0
@@ -270,6 +284,16 @@ def measure_face(aroll, end, W=1080, H=1920):
         if top is None:
             continue
         cy = (top + 0.62 * (b_ - a)) * k
+        # Centre on the FOREHEAD band (hairline to ~brow): the whole skin run includes an
+        # ear or the neck on one side when the head is turned, which pulled the centre
+        # ~30 px off the nose on a test shot. The forehead has no ears.
+        mids = []
+        for y in range(top, min(r1, top + max(2, int(0.3 * (b_ - a))))):
+            row = [x for x in range(a, b_) if mask[y * sx + x]]
+            if len(row) >= 0.3 * (b_ - a):
+                mids.append((row[0] + row[-1] + 1) / 2.0)
+        if len(mids) >= 2:
+            cx = sorted(mids)[len(mids) // 2] * k
         xs.append(cx)
         ys.append(cy)
         ws.append(width)
@@ -536,6 +560,12 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             col.setdefault(k, v)
         lg = brand["logo"]
         logo_src = brand["_logo"]
+        if style == "auto":
+            style = "gate" if gate_available(lg) else "portal"
+        if style == "gate" and not gate_available(lg, any_shape=True):
+            sys.exit("outro.style gate needs logo.mark in brand.json — rerun "
+                     "scripts/brand_from_logo.py on the logo (it found no distinct mark: "
+                     "choose portal, line or impact)")
         lw0 = float(lg.get("w") or (probe_size(logo_src) or (600, 200))[0])
         lh0 = float(lg.get("h") or (probe_size(logo_src) or (600, 200))[1])
         asp = lw0 / lh0
@@ -554,6 +584,9 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         E = round(round((O + DURATION[style]) / F) * F, 3)
         fz0 = round(aroll_end - F, 3)          # the freeze shows the video's last frame
         s0, y0 = state or aroll_state(beatmap)
+        if style == "gate":
+            return _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0,
+                              g, W, H, lang_dir, root, say)
 
         # --------------------------------------------------- background
         paper, ink = col["paper"], col["ink"]
@@ -856,12 +889,15 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
     elif style == "line":
         # the page turns in READING direction: right→left for Hebrew
         x_from, x_to = (W, -6) if rtl else (-6, W)
-        inset_to = f"inset(0px {W}px 0px 0px)" if rtl else f"inset(0px 0px 0px {W}px)"
+        # distinct values on both ends: the browser collapses "inset(0px 0px 0px 0px)" to
+        # "inset(0px)" and GSAP then cannot interpolate (see _plan_gate)
+        inset_to = (f"inset(0px {W}.01px 0.02px 0.03px)" if rtl
+                    else f"inset(0px 0.01px 0.02px {W}.03px)")
         drift = -60 if rtl else 60
         js += [
             f"      tl.fromTo(\"#owipe\", {{ x: {x_from} }}, {{ x: {x_to}, duration: 0.55, "
             f"ease: \"power2.inOut\", immediateRender: false }}, {r(O)});",
-            f"      tl.fromTo({FOOT}, {{ clipPath: \"inset(0px 0px 0px 0px)\" }}, "
+            f"      tl.fromTo({FOOT}, {{ clipPath: \"inset(0px 0.01px 0.02px 0.03px)\" }}, "
             f"{{ clipPath: \"{inset_to}\", duration: 0.55, ease: \"power2.inOut\", "
             f"immediateRender: false }}, {r(O)});",
             f"      tl.fromTo({FOOT}, {{ x: 0, y: {r(y0)}, scale: {s0} }}, {{ x: {drift}, y: {r(y0)}, "
@@ -869,8 +905,8 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             f"      tl.set(\"#ofreeze\", {{ opacity: 0 }}, {r(O + 0.6)});",
             f"      tl.set(\"#ologo\", {{ opacity: 1 }}, {r(O + 0.4)});",
             f"      tl.fromTo(\"#ologo\", {{ x: {-drift * 0.6}, "
-            f"clipPath: \"{'inset(0% 0% 0% 100%)' if rtl else 'inset(0% 100% 0% 0%)'}\" }}, "
-            f"{{ x: 0, clipPath: \"inset(0% 0% 0% 0%)\", duration: 0.8, ease: \"power3.out\", "
+            f"clipPath: \"{'inset(0% 0.01% 0.02% 100%)' if rtl else 'inset(0% 100% 0.02% 0.03%)'}\" }}, "
+            f"{{ x: 0, clipPath: \"inset(0% 0.01% 0.02% 0.03%)\", duration: 0.8, ease: \"power3.out\", "
             f"immediateRender: false }}, {r(O + 0.4)});",
             f"      tl.fromTo(\"#orule\", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.6, "
             f"ease: \"power3.out\", immediateRender: false }}, {r(O + 0.85)});",
@@ -932,6 +968,503 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             "voice_ref_lufs": voice_ref}
     return {"style": style, "start": O, "end": E, "aroll_end": round(aroll_end, 3),
             "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
+            "bed": {"swell_from": r(O + 0.1), "fade_from": r(E - 1.0), "fade_to": r(E - F),
+                    "voice_ref": voice_ref},
+            "info": info}
+
+
+# ---------------------------------------------------------------------- gate
+# Sizes for the gate lockup. Wider than the portal's on purpose: the mark is only part of
+# the logo, and its opening has to hold a face that still reads on a phone.
+GATE_AREA = 190000
+GATE_MAX_W = 660
+GATE_MAX_H = 420
+GATE_MAX_H_STACKED = 580
+GATE_MIN_OPEN = 84          # px on screen: the opening's width, the door's width on landing
+GATE_DOOR_W = (440, 600)    # the door around head and shoulders, in composition px
+GATE_DOOR_K = 1.95          # door width = 1.95 face widths (the reference: 540 px for a 280 px face)
+GATE_ORBS = 7
+# The background the logo sits on in the gate: the last frame, blurred and dimmed ~90 %.
+GATE_BG = "#10161c"
+# The cue the sound pipeline places from its own library (scripts/sfx.py), with the
+# reference base volumes; the outro's synthesised stand-ins play until it does.
+GATE_CUES = (("soft_whoosh", 0.05, 0.30, "page"), ("portal_suck", 1.12, 0.30, "rush"),
+             ("logo_sting", 1.70, 0.26, "shimmer"))
+
+
+def gate_available(lg, any_shape=False):
+    """Does brand.json carry a mark the gate can fly into? By default only a mark with an
+    opening (arch) or a hole makes gate the AUTOMATIC choice; a solid mark ("none") still
+    works when the user asks for gate (the door lands under the mark and it draws over)."""
+    m = (lg or {}).get("mark") or {}
+    shape = (m.get("opening") or {}).get("shape")
+    if not m or not (m.get("files") or {}).get("mark"):
+        return False
+    return shape in ("arch", "hole", "none") if any_shape else shape in ("arch", "hole")
+
+
+def _face_of(o, W, H):
+    """(x, y, width) from one framing record, in composition px. Accepts {cx,cy,w},
+    {x,y,w|width}, [x, y(, w)], and normalised 0-1 values."""
+    if o is None:
+        return None
+    if isinstance(o, (list, tuple)) and len(o) >= 2:
+        x, y, w = float(o[0]), float(o[1]), float(o[2]) if len(o) > 2 else 0.0
+    elif isinstance(o, dict):
+        x = o.get("cx", o.get("x"))
+        y = o.get("cy", o.get("y"))
+        w = o.get("w", o.get("width", o.get("face_w", 0)))
+        if x is None or y is None:
+            return None
+        x, y, w = float(x), float(y), float(w or 0)
+    else:
+        return None
+    if 0 < x <= 1.0 and 0 < y <= 1.0:
+        x, y, w = x * W, y * H, w * W
+    return x, y, w
+
+
+def read_framing(path, t_end, W, H):
+    """The face from build/framing.json (the framing map written before the edit is
+    designed — references/layout.md). The map is the single source of truth for where the
+    speaker is; the outro's own skin-mask measurement is only the fallback. Tolerant of the
+    record's shape: a top-level face / face_center(+face_width), or a list of timed
+    samples ("samples" / "frames" / "faces", each with "t"), nearest to the A-roll end."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(d, dict):
+        for k in ("samples", "frames", "faces", "timeline"):
+            seq = d.get(k)
+            if isinstance(seq, list) and seq and isinstance(seq[0], dict):
+                best = min(seq, key=lambda s: abs(float(s.get("t", s.get("time", 0))) - t_end))
+                f = _face_of(best.get("face", best), W, H)
+                if f:
+                    return f
+        if "face" in d:
+            f = _face_of(d["face"], W, H)
+            if f:
+                if not f[2] and d.get("face_width"):
+                    f = (f[0], f[1], float(d["face_width"]))
+                return f
+        if "face_center" in d:
+            f = _face_of(d["face_center"], W, H)
+            if f:
+                return f[0], f[1], float(d.get("face_width", d.get("face_w", 0)) or 0)
+    return None
+
+
+def _gate_orbs(door, gx0, gy0, gx1, gy1, light):
+    """Seven soft light orbs around the door — positions from a FIXED seed in Python (no
+    Math.random() in the page: renders must be identical), inside the safe zone, off the
+    door, spread apart. Colours: the brand light and two warm bokeh tints."""
+    import random
+    rng = random.Random(7)
+    L, T, Rr, B = door
+    cols = [_mix(light, "#ffffff", 0.55), "#FFE2B8", _mix(light, "#ffffff", 0.7), "#FFD7A0",
+            "#DCE8EE", _mix(light, "#ffffff", 0.6), "#DCE8EE"]
+    sizes = [46, 64, 48, 44, 34, 30, 26]
+    out, tries = [], 0
+    while len(out) < GATE_ORBS and tries < 4000:
+        tries += 1
+        d = sizes[len(out)]
+        x = rng.uniform(gx0 + 30 + d / 2, gx1 - 30 - d / 2)
+        y = rng.uniform(gy0 + 40 + d / 2, gy1 - 60 - d / 2)
+        if L - 50 < x < Rr + 50 and T - 50 < y < B + 30:
+            continue
+        if any(math.hypot(x - a, y - b) < (160 if tries < 2000 else 90) for a, b, _, _ in out):
+            continue
+        out.append((x, y, d, cols[len(out)]))
+    return out
+
+
+def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W, H,
+               lang_dir, root, say):
+    """The gate outro (references/outro.md, "gate"). Geometry first, then markup, CSS,
+    timeline and sound — all in composition px. Runs with cwd = the project root."""
+    r = lambda v: round(float(v), 3)
+    gx0, gy0, gx1, gy1 = g["safe"]
+    cxs = g["center_x"]
+    lg = brand["logo"]
+    mk = lg["mark"]
+    op = mk["opening"]
+    shape = op.get("shape", "none")
+    files = mk.get("files") or {}
+    light = col.get("hl_on_dark") or col["primary"]
+    lr, lgc, lb = _rgb(light)
+    light_rgb = f"{lr},{lgc},{lb}"
+
+    # ------------------------------------------------------------ the lockup
+    c0x, c0y, c1x, c1y = mk.get("content") or [0, 0, lg["w"], lg["h"]]
+    cw, ch = float(c1x - c0x), float(c1y - c0y)
+    asp = cw / ch
+    lw = min(GATE_MAX_W, math.sqrt(GATE_AREA * asp))
+    lh = lw / asp
+    # a stacked lockup (mark over the words) is tall and narrow: equal area would leave its
+    # words tiny, so it may use more of the safe zone's height
+    max_h = GATE_MAX_H if asp >= 1.0 else GATE_MAX_H_STACKED
+    if lh > max_h:
+        lw, lh = max_h * asp, max_h
+    sc = lw / cw
+    if float(op["w"]) * sc < GATE_MIN_OPEN:
+        grow = min(GATE_MIN_OPEN / (float(op["w"]) * sc), (gx1 - gx0 - 60) / lw,
+                   (GATE_MAX_H + 140) / lh)
+        lw, lh, sc = lw * grow, lh * grow, sc * grow
+    tagline = (st.get("tagline") or "").strip()
+    words = tagline.split()
+    tfs = 0
+    if words:
+        n = len(tagline)
+        tfs = int(max(34, min(62, (gx1 - gx0 - 60) / (0.5 * n))))
+        if 0.5 * n * 34 > gx1 - gx0 - 20:
+            say(f"tagline is {n} chars — too long for one line inside the safe zone; "
+                f"shorten it (≤ ~45 chars)")
+    tag_gap = round(0.62 * tfs) if words else 0
+    block_below = (tag_gap + round(1.2 * tfs)) if words else 0
+    cy = float(st.get("center_y", 860))
+    ly = cy - lh / 2
+    ly = max(gy0 + 40, min(ly, gy1 - 40 - lh - block_below))
+    lx = cxs - lw / 2
+    # Grid shift: a lockup that pokes into the right rail (or past the left margin) moves
+    # as ONE piece — every coordinate below is derived after the shift, so the door's
+    # landing, the orbs' sink target and the words all move with it.
+    dx = 0.0
+    if lx + lw > gx1 - 12:
+        dx = (gx1 - 12) - (lx + lw)
+    if lx + dx < gx0 + 12:
+        dx = (gx0 + 12) - lx
+    lx += dx
+
+    def S(x, y):
+        return lx + (float(x) - c0x) * sc, ly + (float(y) - c0y) * sc
+
+    mx, my = S(mk["x"], mk["y"])
+    mw, mh = mk["w"] * sc, mk["h"] * sc
+    ocx, otop = S(op["cx"], op["top"])
+    ow, oh = float(op["w"]) * sc, float(op["h"]) * sc
+    if shape == "arch":
+        e = 0.04 * ow                     # overscan: the door's edge slides under the ink
+        Lw, Lh = ow + 2 * e, oh + e
+        Lx, Ly = ocx - Lw / 2, otop - e
+        sink = (ocx, otop + oh / 2)
+    elif shape == "hole":
+        e = 0.05 * ow
+        Lw, Lh = ow + 2 * e, oh + 2 * e
+        Lx, Ly = ocx - Lw / 2, otop - e
+        sink = (ocx, otop + oh / 2)
+    else:                                 # a solid mark: the door lands UNDER it
+        Lw, Lh = 0.8 * mw, 0.8 * mh
+        Lx, Ly = mx + 0.1 * mw, my + 0.1 * mh
+        sink = (mx + mw / 2, my + mh / 2)
+    A = Lw / Lh
+
+    # ------------------------------------------------------------- the door
+    fr = st.get("face")
+    if fr:
+        fx, fy, fw, how = float(fr[0]), float(fr[1]), 0.0, "config"
+    else:
+        got = read_framing(os.path.join("build", "framing.json"), aroll_end, W, H)
+        if got:
+            (fx, fy, fw), how = got, "build/framing.json"
+        else:
+            fx, fy, fw, how = measure_face(aroll, aroll_end, W, H)
+    Dw = max(GATE_DOOR_W[0], min(GATE_DOOR_W[1], GATE_DOOR_K * fw)) if fw else 540.0
+    Dh = Dw / A
+    if Dh > 0.62 * H:
+        Dh = 0.62 * H
+        Dw = Dh * A
+    dcx = min(max(fx, Dw / 2 + 20), W - Dw / 2 - 20)
+    T = min(max(fy - Dh / 2, 30.0), H - 30 - Dh)
+    dcy = T + Dh / 2
+    Ld, Rd, Bd = dcx - Dw / 2, W - (dcx + Dw / 2), H - (T + Dh)
+    # The browser NORMALISES a clip-path string before GSAP interpolates it: equal values
+    # collapse ("inset(0px 0px 0px 0px round 0px 0px 0px 0px)" reads back as "inset(0px)"),
+    # the two ends then have different number counts and GSAP jumps at the END instead of
+    # tweening — the door popped in fully closed on a render. So every one of the eight
+    # numbers is made distinct by a sub-pixel epsilon (invisible), on both ends. One radius
+    # per corner too: the elliptical "a b c d / e f g h" form normalises the same way.
+    def inset(vals, corners):
+        v = [r(x + 0.01 * i) for i, x in enumerate(list(vals) + list(corners))]
+        return (f"inset({v[0]}px {v[1]}px {v[2]}px {v[3]}px "
+                f"round {v[4]}px {v[5]}px {v[6]}px {v[7]}px)")
+    if shape == "arch":
+        corners = (Dw / 2, Dw / 2, 0, 0)
+    elif shape == "hole":
+        corners = (min(Dw, Dh) / 2,) * 4   # a round hole → a circle; an oval → a stadium
+    else:
+        corners = (0.2 * min(Dw, Dh),) * 4
+    full = inset((0, 0, 0, 0), (0, 0, 0, 0))
+    door = inset((T, Rd, Bd, Ld), corners)
+    # Fly the door into the opening. With transform-origin o (the door centre) and scale s,
+    # a point p lands at o + (p - o)·s + t. Pin the door's top-centre p = (dcx, T) to the
+    # landing's top-centre q:  t = q - (o + (p - o)·s).
+    s1 = Lw / Dw
+    qx, qy = Lx + Lw / 2, Ly
+    tx = qx - (dcx + (dcx - dcx) * s1)
+    ty = qy - (dcy + (T - dcy) * s1)
+    say(f"gate  start {O:.2f}s → end {E:.2f}s  mark {shape} ({mk.get('how')}), "
+        f"face {fx:.0f},{fy:.0f} ({how}); door {Dw:.0f}x{Dh:.0f} at {Ld:.0f},{T:.0f} → "
+        f"{Lw:.1f}x{Lh:.1f} at {Lx:.1f},{Ly:.1f} (s {s1:.4f}, t {tx:.1f},{ty:.1f})"
+        + (f"; grid shift {dx:+.0f}px" if dx else ""))
+
+    # --------------------------------------------------------------- files
+    freeze = extract_last_frame(aroll, "assets/outro_last.png", W, H)
+    sfx_dir = cfg.get("audio", {}).get("sfx_dir", "assets/sfx")
+    synth_sfx(sfx_dir)
+    voice_ref = voice_reference(aroll)
+
+    def ondark(key, need, dst):
+        """The part's own colours on the dark end background when they read; a white
+        silhouette when they do not (a navy wordmark on a dimmed frame vanishes)."""
+        src = files.get(key)
+        if not src or not os.path.exists(src):
+            sys.exit(f"brand.json logo.mark.files.{key} = {src!r} not found — rerun "
+                     f"scripts/brand_from_logo.py")
+        cov = logo_coverage(src, [GATE_BG])[GATE_BG]
+        if cov >= need:
+            return src, "colour"
+        return silhouette(src, "#ffffff", dst), f"white ({cov:.0%} read on dark)"
+
+    mark_file, mark_var = ondark("mark", 0.6, "assets/outro/og_mark.png")
+    parts = {}
+    for side in ("left", "right", "below", "above"):
+        pr = (mk.get("parts") or {}).get(side)
+        if pr and files.get(side):
+            f, var = ondark(side, 0.85, f"assets/outro/og_word_{side}.png")
+            px_, py_ = S(pr["x"], pr["y"])
+            parts[side] = dict(file=f, var=var, x=px_, y=py_, w=pr["w"] * sc, h=pr["h"] * sc)
+    say(f"gate  mark {mark_var}; words " +
+        (", ".join(f"{k} {v['var']}" for k, v in parts.items()) or "none"))
+
+    # ------------------------------------------------------------ elements
+    FOOT = '"#aroll, #ofreeze"'
+    span = r(E - O)
+    els = [dict(tag="div", id="og-bg", cls="og-bg", start=O, dur=span,
+                extra=' data-grid="bleed" data-layout-ignore',
+                inner=f'<img id="og-bgimg" src="{freeze}" alt="" /><div id="og-dim"></div>'),
+           dict(tag="img", id="ofreeze", cls="ofreeze", start=fz0, dur=r(E - fz0),
+                extra=f' src="{freeze}" alt="" data-grid="bleed" data-layout-ignore')]
+    inner = ['<div id="og-in">']
+    fl_d = max(300.0, min(700.0, 5.4 * Lw))
+    inner.append('<div id="og-flash" data-grid="bleed"></div>')
+    if shape in ("arch", "hole"):
+        inner.append('<div id="og-light" data-grid="bleed"></div>')
+    word_js = []
+    for side, p in parts.items():
+        if side == "left":
+            wx, wy = 0.0, p["y"] - 80
+            ww, wh = mx + 0.04 * mw, p["h"] + 160
+            frm = ("x", (wx + ww) - p["x"] + 8)
+        elif side == "right":
+            wx, wy = mx + 0.96 * mw, p["y"] - 80
+            ww, wh = W - wx, p["h"] + 160
+            frm = ("x", -((p["x"] + p["w"]) - wx) - 8)
+        elif side == "below":
+            wx, wy = 0.0, my + 0.96 * mh
+            ww, wh = float(W), H - wy
+            frm = ("y", -((p["y"] + p["h"]) - wy) - 8)
+        else:
+            wx, wy = 0.0, 0.0
+            ww, wh = float(W), my + 0.04 * mh
+            frm = ("y", (wy + wh) - p["y"] + 8)
+        wid = f"og-w{side[0]}"
+        inner.append(f'<div class="og-wrap" data-grid="bleed" style="left:{r(wx)}px;top:{r(wy)}px;'
+                     f'width:{r(ww)}px;height:{r(wh)}px">'
+                     f'<img id="{wid}" class="og-word" src="{p["file"]}" alt="" '
+                     f'style="left:{r(p["x"] - wx)}px;top:{r(p["y"] - wy)}px;'
+                     f'width:{r(p["w"])}px;height:{r(p["h"])}px" /></div>')
+        ax, d0 = frm
+        word_js.append(f"      tl.fromTo(\"#{wid}\", {{ {ax}: {r(d0)}, opacity: 1, filter: \"blur(10px)\" }}, "
+                       f"{{ {ax}: 0, opacity: 1, filter: \"blur(0px)\", duration: 0.6, "
+                       f"ease: \"expo.out\", immediateRender: false }}, {r(O + 1.5)});")
+    # the mark: its own pixels, revealed by a stroke MASK drawn along the mark's traced
+    # centreline (two halves rising from the base to the top, like a pen drawing an arch)
+    pad = 40
+    vb = f"{-pad} {-pad} {r(mw + 2 * pad)} {r(mh + 2 * pad)}"
+    paths = []
+    if shape == "arch":
+        oxl = (float(op["cx"]) - float(op["w"]) / 2 - mk["x"]) * sc
+        oxr = (float(op["cx"]) + float(op["w"]) / 2 - mk["x"]) * sc
+        sw = max(4.0, (oxl + (mw - oxr)) / 2)
+        xL, xR = oxl / 2, (oxr + mw) / 2
+        rc = (xR - xL) / 2
+        cxm = (xL + xR) / 2
+        acy = (float(op["top"]) - mk["y"]) * sc + ow / 2
+        yb = mh + 2
+        paths = [f"M{r(xL)} {r(yb)} V{r(acy)} A{r(rc)} {r(rc)} 0 0 1 {r(cxm)} {r(acy - rc)}",
+                 f"M{r(xR)} {r(yb)} V{r(acy)} A{r(rc)} {r(rc)} 0 0 0 {r(cxm)} {r(acy - rc)}"]
+    elif shape == "hole":
+        hcx = (float(op["cx"]) - mk["x"]) * sc
+        hcy = (float(op.get("cy", float(op["top"]) + float(op["h"]) / 2)) - mk["y"]) * sc
+        hr = ow / 2
+        R = min(mw, mh) / 2
+        sw = max(4.0, R - hr)
+        rc = (hr + R) / 2
+        paths = [f"M{r(hcx)} {r(hcy + rc)} A{r(rc)} {r(rc)} 0 0 1 {r(hcx)} {r(hcy - rc)}",
+                 f"M{r(hcx)} {r(hcy + rc)} A{r(rc)} {r(rc)} 0 0 0 {r(hcx)} {r(hcy - rc)}"]
+    if paths:
+        mask = (f'<defs><mask id="og-mask" maskUnits="userSpaceOnUse" x="{-pad}" y="{-pad}" '
+                f'width="{r(mw + 2 * pad)}" height="{r(mh + 2 * pad)}">' +
+                "".join(f'<path id="og-d{i + 1}" class="og-draw" d="{d}" pathLength="100" '
+                        f'stroke-width="{r(sw * 1.9)}" />' for i, d in enumerate(paths)) +
+                f'<rect id="og-mfull" x="{-pad}" y="{-pad}" width="{r(mw + 2 * pad)}" '
+                f'height="{r(mh + 2 * pad)}" fill="#ffffff" /></mask></defs>')
+        img = (f'<image href="{mark_file}" x="0" y="0" width="{r(mw)}" height="{r(mh)}" '
+               f'preserveAspectRatio="none" mask="url(#og-mask)" />')
+    else:
+        mask = ""
+        img = (f'<image href="{mark_file}" x="0" y="0" width="{r(mw)}" height="{r(mh)}" '
+               f'preserveAspectRatio="none" />')
+    inner.append(f'<svg id="og-mark" class="og-mark" width="{r(mw + 2 * pad)}" '
+                 f'height="{r(mh + 2 * pad)}" viewBox="{vb}" '
+                 f'style="left:{r(mx - pad)}px;top:{r(my - pad)}px">{mask}{img}</svg>')
+    tg_y = ly + lh + tag_gap
+    if words:
+        spans = " ".join(f'<span id="og-tw{i}" class="og-tw {"og-tw1" if i == 0 else "og-tw2"}">'
+                         f'{_esc(w_)}</span>' for i, w_ in enumerate(words))
+        inner.append(f'<div id="og-tag">{spans}</div>')
+    orbs = _gate_orbs((Ld, T, W - Rd, H - Bd), gx0, gy0, gx1, gy1, light)
+    for i, (ox_, oy_, d, c) in enumerate(orbs):
+        inner.append(f'<i id="og-orb{i}" class="og-orb" data-grid="bleed" style="left:{r(ox_ - d / 2)}px;'
+                     f'top:{r(oy_ - d / 2)}px;width:{d}px;height:{d}px;background:'
+                     f'{_mix(c, "#ffffff", 0.5)};box-shadow:0 0 {d}px {round(d / 3)}px {c}aa"></i>')
+    inner.append('</div>')
+    els.append(dict(tag="div", id="og-lock", cls="og-lock", start=O, dur=span,
+                    inner="".join(inner), extra=' data-layout-allow-overflow'))
+    els.append(dict(tag="div", id="og-fade", cls="og-fade", start=O, dur=span,
+                    extra=' data-grid="bleed" data-layout-ignore'))
+
+    # ------------------------------------------------------------------ css
+    if shape == "arch":
+        li_x, li_y, li_w, li_h = ocx - ow / 2, otop, ow, oh
+        li_r = f"{r(ow / 2)}px {r(ow / 2)}px 0 0"
+    else:
+        li_x, li_y, li_w, li_h = ocx - ow / 2, otop, ow, oh
+        li_r = "50%"
+    mark_extra = "" if paths else "#og-mark { clip-path: inset(100% 0.01% 0.02% 0.03%); }"
+    face_pct = (round(100 * dcx / W), round(100 * dcy / H))
+    css = string.Template(open(os.path.join(TEMPLATE_DIR, "gate.css"),
+                               encoding="utf-8").read()).substitute(
+        W=W, H=H, bgw=W + 120, bgh=H + 120, dim_x=face_pct[0], dim_y=face_pct[1],
+        push_ox=r(sink[0]), push_oy=r(sink[1]),
+        fl_x=r(sink[0] - fl_d / 2), fl_y=r(sink[1] - fl_d / 2), fl_d=r(fl_d),
+        light_rgb=light_rgb, li_x=r(li_x), li_y=r(li_y), li_w=r(li_w), li_h=r(li_h),
+        li_r=li_r, mark_extra=mark_extra, tg_x=gx0, tg_w=gx1 - gx0, tg_y=r(tg_y),
+        dir=lang_dir, tfs=tfs, tag_light=_mix(light, "#ffffff", 0.45))
+
+    # ------------------------------------------------------------------- js
+    L = lambda t: r(O + t)
+    js = [f"      // ---- OUTRO (gate) — scripts/outro.py. Starts {O}s, ends {E}s. The frame "
+          f"becomes the logo: door {r(Dw)}x{r(Dh)} → the mark's {shape}.",
+          f"      tl.set(\"#ofreeze\", {{ x: 0, y: {r(y0)}, scale: {s0} }}, 0);",
+          # reset the camera: no punch-in, sway or panel offset may leak into the outro
+          f"      tl.set({FOOT}, {{ transformOrigin: \"{r(dcx)}px {r(dcy)}px\", x: 0, y: 0, "
+          f"scale: 1, rotation: 0 }}, {r(O)});",
+          f"      if (document.querySelector(\"#cam\")) tl.set(\"#cam\", {{ x: 0, y: 0, scale: 1, "
+          f"rotation: 0 }}, {r(O)});",
+          # 1. the blurred, darkened last frame behind
+          f"      tl.fromTo(\"#og-bg\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2, "
+          f"immediateRender: false }}, {r(O)});",
+          f"      tl.fromTo(\"#og-bgimg\", {{ scale: 1 }}, {{ scale: 1.3, duration: {span}, "
+          f"ease: \"none\", immediateRender: false }}, {r(O)});",
+          f"      tl.fromTo(\"#og-dim\", {{ opacity: 0.35 }}, {{ opacity: 1, duration: 1.0, "
+          f"ease: \"power2.inOut\", immediateRender: false }}, {L(0.7)});",
+          # 2. the frame closes into the door around head and shoulders
+          f"      tl.fromTo({FOOT}, {{ clipPath: \"{full}\" }}, {{ clipPath: \"{door}\", "
+          f"duration: 0.68, ease: \"power3.inOut\", immediateRender: false }}, {L(0.02)});",
+          # 4. the door flies into the mark's opening, with a motion blur
+          f"      tl.fromTo({FOOT}, {{ x: 0, y: 0, scale: 1 }}, {{ x: {r(tx)}, y: {r(ty)}, "
+          f"scale: {round(s1, 5)}, duration: 0.66, ease: \"power3.inOut\", "
+          f"immediateRender: false }}, {L(0.76)});",
+          f"      tl.fromTo({FOOT}, {{ filter: \"blur(0px)\" }}, {{ filter: \"blur(14px)\", "
+          f"duration: 0.3, ease: \"power2.in\", immediateRender: false }}, {L(0.76)});",
+          f"      tl.fromTo({FOOT}, {{ filter: \"blur(14px)\" }}, {{ filter: \"blur(0px)\", "
+          f"duration: 0.32, ease: \"power2.out\", immediateRender: false }}, {L(1.08)});"]
+    # 3. orbs in, then sucked into the opening (per-orb ids: no overlapping selector tweens)
+    for i, (ox_, oy_, d, c) in enumerate(orbs):
+        t_in, t_sink = O + 0.25 + 0.03 * i, O + 0.82 + 0.035 * i
+        js.append(f"      tl.fromTo(\"#og-orb{i}\", {{ opacity: 0, scale: 0.6 }}, {{ opacity: 1, "
+                  f"scale: 1.25, duration: 0.4, ease: \"power2.out\", immediateRender: false }}, "
+                  f"{r(t_in)});")
+        js.append(f"      tl.fromTo(\"#og-orb{i}\", {{ x: 0, y: 0, scale: 1.25, opacity: 1 }}, "
+                  f"{{ x: {r(sink[0] - ox_)}, y: {r(sink[1] - oy_)}, scale: 0.12, opacity: 0.9, "
+                  f"duration: 0.55, ease: \"power3.in\", immediateRender: false }}, {r(t_sink)});")
+        js.append(f"      tl.fromTo(\"#og-orb{i}\", {{ opacity: 0.9 }}, {{ opacity: 0, duration: 0.08, "
+                  f"immediateRender: false }}, {r(t_sink + 0.56)});")
+    # 5. the mark draws itself; flash + glow on lock
+    if paths:
+        js.append(f"      tl.fromTo(\"#og-d1, #og-d2\", {{ strokeDashoffset: 100 }}, "
+                  f"{{ strokeDashoffset: 0, duration: 0.34, ease: \"power2.inOut\", "
+                  f"immediateRender: false }}, {L(1.14)});")
+        # the traced centreline is an approximation: once drawn, show the WHOLE mark
+        js.append(f"      tl.set(\"#og-mfull\", {{ opacity: 1 }}, {L(1.48)});")
+    else:
+        js.append(f"      tl.fromTo(\"#og-mark\", {{ clipPath: \"inset(100% 0.01% 0.02% 0.03%)\" }}, "
+                  f"{{ clipPath: \"inset(0.001% 0.01% 0.02% 0.03%)\", duration: 0.34, ease: \"power2.inOut\", "
+                  f"immediateRender: false }}, {L(1.14)});")
+    js += [f"      tl.fromTo(\"#og-flash\", {{ opacity: 0, scale: 0.4 }}, {{ opacity: 1, scale: 1, "
+           f"duration: 0.12, ease: \"power2.out\", immediateRender: false }}, {L(1.4)});",
+           f"      tl.fromTo(\"#og-flash\", {{ opacity: 1, scale: 1 }}, {{ opacity: 0, scale: 1.5, "
+           f"duration: 0.7, ease: \"power2.out\", immediateRender: false }}, {L(1.52)});",
+           f"      tl.fromTo(\"#og-mark\", {{ filter: \"drop-shadow(0px 0px 0px rgba({light_rgb},0))\" }}, "
+           f"{{ filter: \"drop-shadow(0px 0px 26px rgba({light_rgb},0.9))\", duration: 0.2, "
+           f"immediateRender: false }}, {L(1.42)});",
+           f"      tl.fromTo(\"#og-mark\", {{ filter: \"drop-shadow(0px 0px 26px rgba({light_rgb},0.9))\" }}, "
+           f"{{ filter: \"drop-shadow(0px 0px 12px rgba({light_rgb},0.55))\", duration: 0.9, "
+           f"ease: \"power2.out\", immediateRender: false }}, {L(1.65)});",
+           # 6. the speaker steps through: fades inside the opening as the light fills it
+           f"      tl.fromTo({FOOT}, {{ opacity: 1 }}, {{ opacity: 0, duration: 0.5, "
+           f"ease: \"power2.inOut\", immediateRender: false }}, {L(1.58)});"]
+    if shape in ("arch", "hole"):
+        js.append(f"      tl.fromTo(\"#og-light\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.5, "
+                  f"ease: \"power2.inOut\", immediateRender: false }}, {L(1.58)});")
+    # 7. the words slide out from behind the mark
+    js += word_js
+    # 8. the tagline, word by word (the reference's word(): faint grey → colour)
+    step = min(0.2, 1.2 / max(1, len(words)))
+    for i in range(len(words)):
+        js.append(f"      tl.fromTo(\"#og-tw{i}\", {{ opacity: 0.18, filter: \"blur(6px) grayscale(1)\" }}, "
+                  f"{{ opacity: 1, filter: \"blur(0px) grayscale(0)\", duration: 0.22, "
+                  f"ease: \"power2.out\", immediateRender: false }}, {r(O + 2.12 + step * i)});")
+    # 9. slow push on the opening, fade to black
+    js.append(f"      tl.fromTo(\"#og-in\", {{ scale: 1 }}, {{ scale: 1.045, duration: {r(E - O - 1.4)}, "
+              f"ease: \"none\", immediateRender: false }}, {L(1.4)});")
+    js.append(f"      tl.fromTo(\"#og-fade\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.4, "
+              f"ease: \"power1.in\", immediateRender: false }}, {r(E - 0.4 - F)});")
+
+    # ---------------------------------------------------------------- sound
+    # Cues for the sound pipeline (scripts/sfx.py places them from its library, scaled to
+    # the voice; exempt = deliberate beats that stay on the frame, not slid off words),
+    # plus synthesised stand-ins so the outro is never silent until it does.
+    cues, sfx = [], []
+    for name, t, base, synth in GATE_CUES:
+        cues.append({"name": name, "t": r(O + t), "base_vol": base, "exempt": True,
+                     "stand_in": f"osfx_{synth}"})
+        path = os.path.join(sfx_dir, f"outro_{synth}.wav")
+        full_ = path if os.path.isabs(path) else os.path.join(root, path)
+        dur = min(wav_duration(full_), E - (O + t))
+        if dur > 0.05:
+            sfx.append({"id": f"osfx_{synth}", "src": path, "start": r(O + t),
+                        "duration": r(dur), "volume": cue_volume(cfg, voice_ref, synth, full_),
+                        "cue": name})
+
+    info = {"style": "gate", "mark": shape, "mark_how": mk.get("how"),
+            "mark_variant": mark_var, "words": {k: v["var"] for k, v in parts.items()},
+            "face": [round(fx), round(fy), round(fw)], "face_how": how,
+            "door": {"x": round(Ld), "y": round(T), "w": round(Dw), "h": round(Dh),
+                     "origin": [r(dcx), r(dcy)], "clip": door},
+            "land": {"x": r(Lx), "y": r(Ly), "w": r(Lw), "h": r(Lh), "scale": round(s1, 5),
+                     "tx": r(tx), "ty": r(ty)},
+            "opening_screen": {"cx": r(ocx), "top": r(otop), "w": r(ow), "h": r(oh)},
+            "logo_box": [round(lx), round(ly), round(lx + lw), round(ly + lh)],
+            "grid_shift": r(dx), "tagline_top": r(tg_y) if words else None,
+            "voice_ref_lufs": voice_ref}
+    return {"style": "gate", "start": O, "end": E, "aroll_end": round(aroll_end, 3),
+            "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
+            "cues": cues,
             "bed": {"swell_from": r(O + 0.1), "fade_from": r(E - 1.0), "fade_to": r(E - F),
                     "voice_ref": voice_ref},
             "info": info}
@@ -1139,8 +1672,10 @@ def preview(a):
     bj = json.load(open(bpath, encoding="utf-8"))
     bdir = os.path.dirname(os.path.abspath(bpath))
     proj = os.getcwd()
-    for key in ("src", "trimmed", "on_dark", "on_light"):
-        p = (bj.get("logo") or {}).get(key)
+    lgj = bj.get("logo") or {}
+    want = [lgj.get(k) for k in ("src", "trimmed", "on_dark", "on_light", "knocked")]
+    want += list(((lgj.get("mark") or {}).get("files") or {}).values())   # the gate's parts
+    for p in want:
         if not p:
             continue
         # the files next to THIS brand.json win — a project brand/ folder may hold another
@@ -1224,6 +1759,9 @@ def preview(a):
     media = {"aroll": "assets/aroll.mp4"}
     # the bench's A-roll sits in the beat map's full-screen state, like a real reel's end
     p = plan(ocfg, media, aroll_end, None, root=out, state=(1.02, 0.0))
+    if p.get("cues"):
+        print("  cues for the sound pipeline: " +
+              ", ".join(f"{c['name']} @{c['t']}" for c in p["cues"]))
     body = [f'      <video id="aroll" class="clip" src="assets/aroll.mp4" data-start="0" '
             f'data-duration="{aroll_end}" data-track-index="1" playsinline data-has-audio="true"></video>']
     for i, el in enumerate(p["elements"]):
@@ -1253,7 +1791,7 @@ def preview(a):
 def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("cmd", choices=["plan", "face", "sfx", "preview"])
-    ap.add_argument("--style", choices=STYLES, default=None)
+    ap.add_argument("--style", choices=STYLES + ("auto",), default=None)
     ap.add_argument("--brand", help="brand.json (default: next to brand.css)")
     ap.add_argument("--aroll", default=None)
     ap.add_argument("--media", default="media.json")
@@ -1281,7 +1819,7 @@ def main():
         return 0
     if a.cmd == "preview":
         if not a.style:
-            a.style = (cfg.get("outro") or {}).get("style") or "portal"
+            a.style = (cfg.get("outro") or {}).get("style") or "auto"
         if not a.aroll and os.path.exists("assets/aroll.mp4"):
             a.aroll = "assets/aroll.mp4"
         return preview(a)

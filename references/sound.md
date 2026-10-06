@@ -2,243 +2,293 @@
 
 Sound is half of "premium." A technically clean edit with a boring bed still reads as amateur.
 
+The method in one line: **a track generated for THIS story, its drop aligned to the turn
+word, shaped and calibrated per section against the raw voice, effects on every designed
+transition but never on a word, and a two-stage master to −14 LUFS.**
+
+```
+python3 $S/scripts/music.py --init --turn-word "<the phrase the story turns on>"
+#   edit music_plan.json: rewrite the section styles for this story
+python3 $S/scripts/music.py                 # 2 variants, analysed, the drop aligned → assets/bgm/music.mp3
+python3 $S/scripts/bed.py --init            # bed.json from the plan (+ a drop before the turn)
+#   add drops before punchlines, lower a target where the story peaks
+python3 $S/scripts/bed.py --apply           # → assets/bgm/bed.wav, gaps per section, media.json audio.music
+python3 $S/scripts/sfx.py library           # the named SFX set in assets/sfx/
+python3 $S/scripts/sfx.py place cues.json --apply   # scaled to the voice, moved off words → audio.sfx
+python3 $S/scripts/finish.py                # ... and the master: −14 ± 0.4 LUFS, TP ≈ −1.3
+```
+
+Every script reads `ELEVENLABS_API_KEY` from the project's `.env` or the environment. It
+never prints it, and it checks the balance before it spends anything. **No key is not an
+error.** See [Without an ElevenLabs key](#without-an-elevenlabs-key).
+
 ---
 
 ## Music
 
-### Two tracks, not one
+### Generated per video, never stock
 
-- **Track A** (energetic, hooky) runs frame 1 → **the end of the retention line** (~11–15 s).
-- **Track B** (a bed with more room under dialogue) runs to the end.
-- Fade A out over ~0.45 s and hard-set B in.
+`music.py` sends ElevenLabs Music (`POST /v1/music?output_format=mp3_44100_192`,
+`model_id: music_v1`) a `composition_plan` whose sections follow the video's emotional arc.
+A stock bed never turns where the speaker turns. A track built from the story's own
+sections does: tension, then a hit, a lift, a peak, and a resolve.
 
-> "Switch after the hook" means **the end of the retention line**, not the flare. The flare is
-> only where Track A steps *up* from the under-voice level to the post-flare level.
+`music_plan.json` (written by `--init`, then edited per video):
 
-A single track for the whole reel is also a valid choice — but it has to be asked for, and the
-level still steps at the flare.
+| key | meaning |
+|---|---|
+| `sections` | `[{name, end, styles, gap_db}]` in **video time**. Each starts where the previous one ends. `--init` maps hook → tension → turn → drive → peak → outro onto this video: the turn word, the end of speech, the outro. **Rewrite the styles for this story.** |
+| `variants` | two contrasting global-style presets: `trap` (modern cinematic trap hybrid, 808, builds) and `score` (cinematic motivational score, felt piano). Also `tech` (dark, sleek electronic), or `{"name", "styles"}`. |
+| `turn_word` / `turn_time` | where the story turns ("so I decided…", "stop waiting"). The drop goes here. |
+| `lead` (0.5) | the first section is this much longer than the story section, so the drop is asked for slightly AFTER the turn and the trim (offset) comes out positive. |
+| `tail` (2.0) | extra seconds on the last section. A drop may need up to ~3 s of offset, and without spare length the trimmed track runs out under the outro. |
+| `gap_db` | per-section target for `bed.py` (null = the house value). |
 
-### Music must play from frame 1
+Section styles that worked on a 55 s motivational piece: *"tense and restrained, ticking
+like waiting, sparse pulse"* → *"tension builds, darker, ends with a short hit"* → *"hope
+enters, warm piano and pads, gentle rise"* → *"driving and uplifting, steady momentum,
+full groove"* → *"emotional peak, big and free, soaring"* → *"resolves into one final deep
+hit and a ringing tail"*. Every preset carries *leaves space for a spoken voice* and
+*starts immediately*. The negatives are *vocals, singing, lyrics, choir, rap, vocal chops,
+cheesy, EDM drop, aggressive distortion, long silence, fade in from silence*.
 
-A silent hook is boring and it always gets flagged. Many tracks open near-silent (−83 dB at
-t=0 is common). **Measure the opening RMS before committing** —
-`asetnsamples=24000,astats` over the first 40 s — and require `v[0] > −25 dB`; otherwise `-ss`
-past the intro so the reel opens on music.
+- **Two variants, one after the other.** Parallel requests return HTTP 429. The model does
+  not put a drop exactly on a section boundary, so a second variant is what makes landing
+  it on the turn reliable. Cost is about 830 credits per generated minute: two 55 s
+  variants measured 1,512. `--dry-run` prints the requests and the estimate.
+- **Credits first.** The run stops before the first request when the balance can't cover
+  the batch. ElevenLabs' balance can lag a few minutes behind a generation.
 
-### Start on the actual first beat
+### Analyse, pick, align
 
-> *"The frame that the music starts, that's where the music should start."*
+For every candidate, `music.py` prints the RMS per 0.5 s (the structure at a glance) and
+finds:
 
-Tracks carry 100–150 ms of encoder/room silence before the first attack. Find it and set the
-media start just before it, so frame 1 **is** the downbeat:
+- **drops** at 20 ms resolution. A *rise* is the biggest energy step (the next 1.5 s
+  against the previous 1.5 s). A *break* is a short stop (0.3-1 s, ≥ 5 dB under both
+  sides) and the return after it, which is how a generated track often marks a section
+  change. Each one is refined to its sharpest 60 ms jump, the actual hit.
+- **intro silence.** The track is rejected if it runs over 2.5 s, and warned about if
+  near-silence is left at frame 1 after the trim.
+- **dead gaps.** The track is rejected if there is ≥ 1 s of silence inside the body.
+- **natural ending**: the last 0.5 s window within 20 dB of the median.
 
-```
-scan 10 ms Peak_level windows → first above −18 dB = the attack
-data-media-start = attack − 0.013
-```
-
-Do **not** `-ss` into a louder section for the hook track. (That trick is only for a t=0 that
-is genuinely silent.)
-
-### Find the track's break and land it on the flare
-
-Scan RMS in 0.5 s windows and look for the one window ~15 dB below the mean — that is the
-break. Then `-ss (break − flare_time)` so it falls on the hook turn, and **re-verify the new
-t=0 is still above −25 dB.**
-
-### Levels
-
-**Landed calibration: 0.056 under voice, 0.135 after the flare**, fading out at the end.
-Present, never competing with the voice.
-
-Volume history, so you do not re-walk it: 0.045 = inaudible. 0.10 / 0.24 = too loud.
-0.075 / 0.18 = still too loud. **0.056 / 0.135 = the values that survived review.**
-
-**Level-match Track B instead of reusing 0.135 blindly.** Those numbers were calibrated on a
-track with a −18.2 dB mean:
+Then it picks the variant whose drop can land on the turn and sets
 
 ```
-vol_B = 0.135 × 10^((mean_A − mean_B) / 20)
+offset = dropTime − (turnWordStart − 0.06)        # 0 ≤ offset ≤ 3 s
 ```
 
-### Measure the bed against the VOICE, in dB, per section
+The track is trimmed by `offset` (in `bed.py`), so the hit lands 60 ms before the turn word:
+the ear hears the hit, then the word. *Reference:* the drop at 24.04 s in the track and the
+turn line at 23.58 s gave an offset of 0.52 s.
 
-A volume number means nothing without the track and the speaker it was tuned on. The
-portable target is **how many dB the music sits under the voice**, measured on the mix
-(or on stems: split a finished mix with Demucs before judging it, never from the pauses).
+It reports where the natural ending lands against the outro start, which ideally is right
+on it, and warns when the music would run out before the composition ends. A logo landing
+in silence is a bug: regenerate with a longer `tail`.
 
-| section | music under voice | why |
-|---|---|---|
-| hook (first ~3 s) | **≈ 12 dB** | energy from frame 1 |
-| designed moments / animation beats | **≈ 14 dB** | the bed swells with the graphic |
-| body | **≈ 16 dB** | present, never competing |
-| a drop before a punchline | bed dips 6–10 dB for ~1 s | the silence sells the line |
+`assets/bgm/music.mp3` is the chosen track, **untrimmed**. `assets/bgm/music_report.json`
+holds the offset, the drop, the ending and every variant's analysis.
 
-These are the house values. A beat 13 dB under the voice through the body already read as
-"too loud". An analysed reference overrides them (`audio.music_db_under_voice`, from
-`apply_style.py`). The **drop is relative to the section's own level**, never an absolute
-volume: a fixed value once raised the music instead of lowering it.
+### Choosing and taste
 
+- **Music from frame 1.** A silent hook is boring and it always gets flagged. That is why
+  the plan says *starts immediately* and the analysis rejects silent intros.
 - **A different track for every video.** A series that reuses one bed sounds like a template.
-  Pick the colour from the content: minimal and dark, melodic, noir, a ticking clock...
 - **Energetic talking-head reels want rhythm.** A modern trap or groove bed with a real pulse
   beats a cinematic underscore that "fits" and puts the viewer to sleep.
-- **Generated music (e.g. ElevenLabs Music) often opens with silence**, and parallel requests
-  fail (HTTP 429). Scan the head for silence and trim it, and request tracks one after
-  another.
-
-### SFX: calibrate to THIS speaker, and never on a word
-
-- **A quiet speaker needs quieter effects.** Presets are tuned on a voice around −16 dB mean.
-  A speaker recorded at −37 dB mean gets every effect scaled by
-  `10^((voice_mean + 16) / 20)`, or the whooshes swallow the words.
-- **An effect must never sit on a word.** If it lands inside a word, slide it to that word's
-  end when the end is within ~0.35 s. Otherwise duck it to ~55 %. An impact on a short word
-  turns "סבתא" into "ספטו".
-- **Prove it:** re-transcribe a voice+SFX-only mix of the final and compare it word by word
-  with the source transcript. Any changed word is an SFX collision.
-
-### Choosing a track
-
-**Tone: light / curious. Not dark, not scary — and not boring.** A generic documentary or
-marimba bed is a safe floor, not a taste: it meets every technical rule and still gets
-rejected. What is wanted is a track with an actual groove and a hook of its own.
-
-**Offer 2–3 and let the creator choose. Never lead with a stock documentary bed.**
-
-> Licensing is the creator's call, not yours. Pull from whatever library they have configured
-> in `config.json → music_dir`. Never bundle or redistribute music with this skill, and never
-> suggest ripping a commercial track.
+- **Tone: light, confident, never boring.** Not dark, not scary. A generic documentary or
+  marimba bed meets every technical rule and still gets rejected.
+- **Licensing is the creator's call.** Never bundle or redistribute music with this skill,
+  and never suggest ripping a commercial track. ElevenLabs output follows the user's plan
+  terms: paid plans include commercial use.
 
 ---
 
-## The hook transition
+## The bed: shaped per section, calibrated against the voice
 
-At the hook turn (~9–15 s, on the first sentence boundary after the hook):
+`bed.py` turns the chosen track into **one file covering the whole composition** (0 → END,
+the outro tail included), played at volume 1.0. Every level decision is baked into it and
+measured, so no `data-volume` number has to mean something without the track it was tuned
+on.
 
-- a **long riser** (~1.7 s) ending exactly at the cut,
-- an **aggressive double lens flare** (screen-blend, scale sweep 1.6 → 1.0),
-- a white radial **bloom**,
-- an **impact shutter** (layered big shutter + camera flash),
-- a **boom**,
-- and the music handoff.
+1. Trim the track by `offset`, cut it to END, and add a 12 ms fade-in.
+2. Build a gain envelope from keyframes:
+   - **Sections** `[name, start, end, target_gap_dB]` get keys at `start + 0.12` and
+     `end − 0.12`. **Never put two keys on one timestamp.** Tied keys make `np.interp` ramp
+     across the whole section instead of 0.24 s at the boundary, a real bug.
+   - **Drops** before punchlines are `[a, b, ratio]`, a 60 ms ramp in to
+     `sectionGain × ratio` (0.08-0.15), back at `b`. They are **relative to the containing
+     section**: a fixed drop level once *raised* the music under a quiet voice. `--init`
+     adds one right before the turn (`turn − 0.36 → turn − 0.10`, ×0.15), so the silence
+     sells the hit.
+   - **Swells** `[a, b, ratio]` lift to `× ratio` mid-window, for a graphic beat.
+   - **Outro lift** (the voice is gone): last gain at O, ×2.0 at O+0.5, ×1.6 at O+2.2, ×0.6
+     at END−0.5, 0 at END. O comes from `build/outro.json`, or else from the music report.
+     With no outro the bed fades out over the last 0.3 s.
+3. Carve an **EQ pocket** for the voice (−5 dB at 1.8 kHz, Q 1; −3 dB at 450 Hz, Q 1). Then
+   apply a **sidechain compressor keyed by the voice** (voice −6 dB into the key, threshold
+   0.03, ratio 3, attack 15 ms, release 260 ms).
+4. **Calibrate**: per section, `gap = RMS_dB(raw voice) − RMS_dB(processed bed)`, then
+   `gain *= 10^((gap − target)/20)`, capped at ×6.0, **6 iterations**. The sidechain is
+   non-linear, so one pass is not enough. The calibration runs against the **raw** voice,
+   so a quiet AI-avatar voice gets a quiet bed and the master lifts both together.
 
-All of them land on the same frame. If the cut moves, all of them move — including the matte,
-which has to be re-run to cover the new hook length.
+| section (reference) | voice above music |
+|---|---|
+| hook, setup, story sections | **14 dB** |
+| the lift after the turn, the build, the peak | **13 dB** |
+| range | 12-16 dB. Lower = louder music. Go lower where the story peaks. |
 
-### Kill the hook bed before the riser
+`bed.py` prints the target, the measured gap and the gain per section, plus the bed's peak.
+It also prints the `media.json` entry:
 
-At the retention line, stop the hook track dead and leave **actual silence** until the next
-sentence — the riser needs the room.
+```json
+"music": [{"id": "bgm", "src": "assets/bgm/bed.wav", "start": 0, "duration": END,
+           "volume": 1.0, "baked": true}]
+```
 
-*Landed:* bed fades out over 0.30 s at 11.06, silence 11.36 → 13.19, riser 13.19 → 14.88,
-flare + Track B both start at 14.88.
+`--apply` writes it. `"baked": true` means the outro lift and every level are already in
+the file: play it at 1.0 and never put a second volume automation on it.
 
-### Align a riser by its ENVELOPE, not by its file length
+### The hook transition and risers
 
-> *"End the riser exactly on the cut — not the sound effect itself, but the last audible piece
-> of the riser."*
+A **long riser** (~1.7 s) ending exactly on a cut, with a flare, a bloom and an impact on
+the same frame, is still the device for a hard hook turn. Two rules:
 
-Most riser files carry trailing silence, so `start = cut − duration` lands the audible tail
-early and the cut feels disconnected. Measure a 50 ms RMS envelope, find the last bucket above
-~−20 dB relative to peak, and set `start = cut − that_offset`.
-
-*(Example: a 0.894 s riser that goes silent at 0.80 s starts at `cut − 0.80`.)*
-
-### Duck the music under every riser — don't cut it
-
-> *"The music should be stopped exactly when the riser ends, with a little bit of a crossfade
-> so it won't stop completely."*
-
-Ramp the bed to ~25% over the riser's last 0.30 s so it bottoms out **on** the impact, then
-back to full over ~1.1 s `power2.out`.
-
-At a **track change**, the outgoing track goes to 0 over 0.55 s and the incoming one fades up
-from 0.028 over 0.95 s out of the impact — never a hard in-point, which sounds like a splice.
-
-### The music CUT-OUT is a different device — only when asked for by name
-
-> *"When the riser ends, end the music and continue it only in the next cut."*
-
-Kill the bed on the riser's landing frame (0.14 s fade) and restart on the **next segment
-boundary** — the beat lands in silence, which is what sells it. This overrides the
-duck-don't-cut rule wherever it is explicitly asked for; a cut-out is for a reveal line, a duck
-is the default everywhere else.
-
-Keep any boom on the landing **short (~1.1 s)** or its tail fills the silence you just made.
-
-**Implement as two `<audio>` elements off the same file on different tracks**, the second with
-`data-media-start = first_media_start + resume_time`, so the track continues where it *would*
-have been instead of rewinding — the musical phrasing survives the gap.
-
-*Landed:* riser lands on the 36.60 cut, bed out over 0.26 s, dead air under the reveal line,
-bed back in over 0.90 s on the next cut at 39.22.
+- **Align a riser by its envelope, not its file length.** Most riser files carry trailing
+  silence. Measure a 50 ms RMS envelope, find the last bucket above ~−20 dB relative to
+  peak, and set `start = cut − that_offset`.
+- **Duck the bed under a riser, don't cut it**: a `drops` entry over the riser's last
+  0.30 s, ratio ~0.25. A **cut-out** (the bed stops on the landing frame, dead air under a
+  reveal line, back on the next cut) is a different device. Use it only when asked for by
+  name: a drop with ratio 0 over that window.
 
 ---
 
 ## SFX
 
-### The reveal cue is a LOW WHOOSH, not a camera click
+### The library
 
-Pick by **spectral tilt, not by name**: measure `lowpass=f=250` vs `highpass=f=2000` mean and
-take the most bass-heavy short one. *Landed:* a 0.48 s whoosh at +34 dB tilt, trimmed to 0.50 s
-with `lowpass=f=1800` and a 0.16 s fade-out, fired **0.10 s before** the beat so the body of the
-whoosh lands on it.
+`sfx.py library` ensures the named set exists in `assets/sfx/`. Every cue is a 48 kHz stereo
+wav, lead-in silence trimmed, normalised to −6 dBFS peak, and ≤ 1.3 s long (`logo_sting`
+≈ 3.5 s), so a volume number means the same thing for every cue:
 
-Level-match to whatever cue it replaces:
-`vol = 0.34 × 10^((mean_old − mean_new)/20) × 0.85`.
+`whoosh_impact, soft_whoosh, whoosh_low, swap_pop, pop, click, ding, glass_snap,
+riser_short, typing, message, comment_ping, page_flip, portal_suck, logo_sting,
+bars, snap, bricks, shatter, clock`
 
-**Only 5–7 cues per video**, on payoff beats. No vine-boom, ever.
+A missing cue comes from these sources, in order:
+1. `--from DIR` (repeatable): files the user owns, matched by name (`bars.mp3`, `bars_2.wav`).
+2. ElevenLabs sound-generation (`duration_seconds` 1.3, `prompt_influence` 0.6), with
+   concrete, short prompts, when a key is set.
+3. A synthesised fallback built from sines and noise. It is free and owned by nobody, but
+   plainer.
 
-### Level SFX by how far under the VOICE they land
+One-shot cues (click, pop, ding…) keep only their first event, because the generator
+often returns a series. `assets/sfx/library.json` records where every file came from.
 
-Reusing another cue's calibration is how you end up with SFX ~15 dB under the voice —
-measurably present, completely inaudible.
+**Custom cues per video:** `sfx.py gen "heavy steel prison cell bars slamming shut,
+metallic clang, short" --name bars`. More reference prompts: *"thin strings snapping, quick
+twang, short"*, *"light building blocks stacking click, short, satisfying"*, *"metal bars
+breaking apart with a bright shimmer, short"*, *"single soft clock tick tock, short"*.
 
-Measure it: render, then against a render without the cue,
-`ratio = P_new / P_old − 1` per beat, `below_dB = −10 × log10(ratio)`.
+### Placement: an effect on every designed transition
 
-**Target ~7 dB below the voice.** *Landed:* volumes 0.55 / 0.44 / 0.43 on clips normalised to
-−6 dB peak; mean 7.4 dB below, peak −1.8 dBFS.
+Use one on every widget in, state flip, stamp, bars, strings, bricks, button tap, hook out
+and back, and the outro (soft whoosh at O, `portal_suck` at O+1.12, `logo_sting` at
+O+1.7). **Not on captions or headlines.** In a fast montage, a click on every cut is the
+rhythm.
 
-> A mix-RMS delta of only +0.1–0.2 dB means the cue is ~15 dB down and will not be heard. Do
-> not accept that as "the SFX is in there."
-
-### A tiered list gets a cue PER TIER, on EVERY beat
-
-Not one cue per section. Three tiers (bad / ok / best) with three distinct cues.
-
-If the source cues are screen recordings, isolate the sound first: RMS-scan at 10 ms, take the
-loud island above `noise_floor + 14 dB`, cut with 0.05 s pre-roll + 0.14 s tail and a 0.10 s
-fade-out, then normalise all tiers to a **common peak (−6 dB)** so no tier jumps out. Fire at
-`beat − 0.05` so the attack lands on the beat, one track per tier.
-
-### Other placements
-
-- **Cash register** on a price reveal.
-- **Short riser** into a mid-video turn ("but wait…").
-- **A shutter click on every cut** in a fast article/montage sequence — this overrides the
-  5–7-cues rule for that stretch, because the click *is* the rhythm.
-- **A pop on every element in a numbered chain.** A silent number chain reads as unfinished.
-- **A logo/brand pop fires on the WORD, not on the card boundary.** When asked to "add a pop to
-  the X logo", fire it on the frame the brand name is spoken (from the word timings):
-  `scale .30 → 1.14` in 0.26 s `power4.out`, settle to 1.0 in 0.20 s `back.out(3)`, with a pop
-  cue at 0.62 on the same frame.
-
-### Trimming a raw SFX file
-
-Every synthesised or downloaded cue gets its leading silence removed before use:
+### Scale to THIS voice
 
 ```
-silenceremove=start_periods=1:start_threshold=-45dB
+k = clamp(10^((voiceMean_dB + 16.1) / 20), 0.03, 1)     # volumedetect mean of the RAW voice
+volume = base × k                                       # base 0.10-0.45
 ```
 
-*Landed hook mix:* pop 0.62 / whoosh 0.34 / click 0.80.
+The presets were tuned on a voice with a −16 dB mean. A quiet avatar voice (−40 dB mean)
+gets small effect volumes, and the master lifts everything together.
+
+### Never on a word
+
+An effect over a short word swallows it ("סבתא" became "ספטו"; "הזדמנות" was masked).
+`sfx.py place` applies these rules to each cue `{name, t, base_vol, exempt}`:
+
+- If the cue falls inside a word and there is a pause **≥ 0.14 s before** the word, it
+  starts at `speechOnset − 0.1`.
+- Otherwise, if there is a pause **≥ 0.14 s after** the word, it starts at
+  `speechEnd + 0.02`.
+- Otherwise its **volume is halved**.
+- **One move, never a chain of slides** across several words (that is how a cue drifted onto
+  a key word), and never more than 0.6 s.
+- **Exempt** cues (bars, shatter, stamps, hook whooshes, outro) stay on their beat. Keep
+  them moderate (base ≤ 0.45).
+
+The pauses are **measured on the audio**, not read from the word table. Whisper's word ends
+touch the next word's start, so the table shows no gaps in connected speech. A 10 ms
+energy mask of the raw voice gives the real pause edges. The word table only says which
+word a cue hit. The report lists every move. A non-exempt cue whose attack still lands on
+speech is flagged, and the script exits non-zero.
+
+### Craft notes that still hold
+
+- **The reveal cue is a LOW WHOOSH, not a camera click.** Pick by spectral tilt (`lowpass=f=250`
+  against `highpass=f=2000` mean), fired 0.10 s before the beat so the body lands on it.
+- **A tiered list gets a cue per tier, on every beat** (down / mid / up), normalised to a
+  common peak.
+- **A logo/brand pop fires on the WORD**, not on the card boundary.
+- **Prove it:** re-transcribe the master (`transcribe.py renders/final.mp4 --words
+  build/master_words.json`), then `sfx.py check build/master_words.json`. It prints the word
+  match and names the cue sitting on every changed word. A halved cue can still swallow a
+  short word: in testing, "וגרוק" was heard as "ודרוק" under a halved pop, and the
+  voice-only master read correctly. Move that cue to the phrase boundary, or drop it.
+
+---
+
+## Mastering (`finish.py`)
+
+Target: **−14 LUFS integrated, ±0.4; true peak ≈ −1.3 dBTP; AAC 320k.** Reels normalise to
+about −14, so a quieter master just plays quieter than the next video.
+
+The render's integrated loudness picks the chain:
+
+| render | chain |
+|---|---|
+| **quiet / peaky** (≤ −25 LUFS; AI avatars often arrive near −36) | `volume=+20dB` (scaled down for less quiet input), then `acompressor=threshold=0.06:ratio=3:attack=4:release=140:makeup=1`; pre-limiter target starts at −12.8 |
+| **normal** (≈ −20 LUFS) | `acompressor=threshold=0.08:ratio=2`, no pre-gain; pre-limiter target starts at −13.4 |
+
+Then: `aresample=192000, volume=G, alimiter=limit=0.84:attack=2:release=60:level=false,
+aresample=48000`. That is a 4× oversampled limiter at −1.5 dBFS with auto-level off,
+because `level=true` puts the peak straight back.
+
+`finish.py` **measures the encoded master** and moves the pre-limiter target until it lands
+within the tolerance, usually in 2 passes, then muxes the measured AAC into the video
+untouched. Without the pre-gain and compression the limiter clamps the voice peaks and the
+master sticks near −16 LUFS whatever the gain. `finish.py --audio-only mix.wav` masters a
+mix on its own, to test without a render.
+
+---
+
+## Without an ElevenLabs key
+
+The skill works without one. Tell the user plainly which path you took:
+
+| need | without a key |
+|---|---|
+| music | `music.py --file track.mp3`: a track **the user is licensed to use**, with the same analysis, drop alignment, offset and report. Or `music.py --procedural`: a quiet royalty-free synth bed (pad, sub pulse, a hit on the turn, a ringing tail). It is a floor, not a score. Or **no music**: skip `bed.py`, and the reel carries voice and SFX only. |
+| bed | identical: `bed.py` works on whatever `music.mp3` is |
+| SFX library | `sfx.py library --from DIR` for files the user owns. Anything still missing is synthesised (it says so). |
+| custom cue | `sfx.py gen` synthesises a stand-in and says so. For a real one, import a file the user owns. |
+| master | identical |
 
 ---
 
 ## Final audio check
 
-- Peak on the master: **−1 to −2 dBFS** (`volumedetect`).
-- No clipping inherited from the raw — see `references/cutting.md` §7.
-- Listen to the whole thing once at the end. Every rule above is a proxy for that.
+- Master: **−14 ± 0.4 LUFS, true peak ≈ −1.3 dBTP** (`ebur128=peak=true`).
+- Per-section bed gaps within 0.5 dB of target (`bed.py` prints them).
+- Every non-exempt SFX off speech, or halved by rule (`sfx.py place` report).
+- Re-transcription of the master ≥ 97 % word match with `src/words.json`.
+- No clipping inherited from the raw. See `references/cutting.md` §7.
+- You cannot listen. Report the measured numbers, never "it sounds good".

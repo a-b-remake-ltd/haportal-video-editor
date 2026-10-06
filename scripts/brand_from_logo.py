@@ -484,6 +484,345 @@ def find_holes(img: Img, bgcol: Optional[Tuple[int, int, int]], white_counts: bo
     return holes, knock
 
 
+# ======================================================================= mark
+#
+# WHY. The gate outro (scripts/outro.py, style "gate") turns the video frame itself into
+# part of the logo: the speaker's frame closes into a door, flies into the logo's SYMBOL,
+# and the words slide out from behind it. That needs to know which part of the logo is the
+# symbol ("mark") and which parts are words — for ANY logo, not one brand. A mark is the
+# component that does not behave like a letter:
+#   * its colour differs from most of the other components (a blue arch among navy
+#     letters; an orange icon beside a black wordmark),
+#   * it has an OPENING — empty space inside its box reachable from one side only (a gate
+#     or arch open at the bottom) — or an enclosed HOLE (a ring),
+#   * it is big for the row it sits in.
+# The letters around it become word_left / word_right (or word_below / word_above for a
+# stacked lockup), exported separately so the outro can slide them out from behind it.
+
+MARK_MIN_OPENING = 0.12      # opening area / mark box area for an arch to count
+MARK_MIN_HOLE = 0.07         # enclosed hole area / mark box area for a ring to count
+MARK_ALPHA = 128             # a pixel belongs to a glyph from this alpha up
+
+
+def _components(img: Img, knock: Optional[bytearray]):
+    """8-connected components of the opaque pixels (alpha >= MARK_ALPHA, knocked-out
+    counters excluded). 8-connectivity on purpose: anti-aliased diagonal strokes of one
+    glyph touch only at corners. Returns (label array, [component dict])."""
+    from array import array
+    w, h, px = img.w, img.h, img.px
+    n = w * h
+    solid = bytearray(n)
+    al = px[3::4]
+    for p in range(n):
+        if al[p] >= MARK_ALPHA and not (knock is not None and knock[p]):
+            solid[p] = 1
+    lab = array("i", bytes(4 * n))
+    comps = []
+    for start in range(n):
+        if not solid[start] or lab[start]:
+            continue
+        k = len(comps) + 1
+        lab[start] = k
+        dq = deque([start])
+        x0 = x1 = start % w
+        y0 = y1 = start // w
+        area = 0
+        sr = sg = sb = sn = 0
+        while dq:
+            p = dq.pop()
+            area += 1
+            x, y = p % w, p // w
+            if x < x0:
+                x0 = x
+            elif x > x1:
+                x1 = x
+            if y < y0:
+                y0 = y
+            elif y > y1:
+                y1 = y
+            i = p * 4
+            if px[i + 3] >= 250:
+                sr += px[i]
+                sg += px[i + 1]
+                sb += px[i + 2]
+                sn += 1
+            for dy in (-1, 0, 1):
+                yy = y + dy
+                if yy < 0 or yy >= h:
+                    continue
+                for dx in (-1, 0, 1):
+                    xx = x + dx
+                    if (dx or dy) and 0 <= xx < w:
+                        q = yy * w + xx
+                        if solid[q] and not lab[q]:
+                            lab[q] = k
+                            dq.append(q)
+        if not sn:
+            sn = 1
+            sr = sg = sb = 128
+        comps.append({"id": k, "area": area, "box": [x0, y0, x1 + 1, y1 + 1],
+                      "rgb": (round(sr / sn), round(sg / sn), round(sb / sn))})
+    return lab, comps
+
+
+def _shape(lab, w, c):
+    """Opening / hole of one component, inside its own box.
+
+    Empty cells of the box are flooded from each side separately. A region reached from
+    exactly ONE side is an opening on that side (an arch open at the bottom: the space
+    between its legs); a region reached from no side is an enclosed hole. Returns
+    {"opening": {...} | None, "hole": {...} | None} in logo pixels."""
+    x0, y0, x1, y1 = c["box"]
+    bw, bh = x1 - x0, y1 - y0
+    k = c["id"]
+    n = bw * bh
+    if n < 16:
+        return {"opening": None, "hole": None}
+    empty = bytearray(n)
+    for yy in range(bh):
+        row = (y0 + yy) * w + x0
+        for xx in range(bw):
+            if lab[row + xx] != k:
+                empty[yy * bw + xx] = 1
+    sides = {"top": [x for x in range(bw)],
+             "bottom": [(bh - 1) * bw + x for x in range(bw)],
+             "left": [y * bw for y in range(bh)],
+             "right": [y * bw + bw - 1 for y in range(bh)]}
+    reach = {}
+    for s, seeds in sides.items():
+        seen = bytearray(n)
+        dq = deque(q for q in seeds if empty[q])
+        for q in dq:
+            seen[q] = 1
+        while dq:
+            p = dq.pop()
+            x = p % bw
+            for q in ((p - 1) if x > 0 else -1, (p + 1) if x < bw - 1 else -1,
+                      p - bw if p >= bw else -1, p + bw if p < n - bw else -1):
+                if q >= 0 and empty[q] and not seen[q]:
+                    seen[q] = 1
+                    dq.append(q)
+        reach[s] = seen
+    best = None
+    for s in sides:
+        others = [reach[o] for o in sides if o != s]
+        cells = [p for p in range(n) if reach[s][p] and not any(o[p] for o in others)]
+        if best is None or len(cells) > len(best[1]):
+            best = (s, cells)
+    opening = None
+    if best and best[1]:
+        s, cells = best
+        xs = [p % bw for p in cells]
+        ys = [p // bw for p in cells]
+        ox0, ox1, oy0, oy1 = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+        ratio = len(cells) / float(n)
+        if s in ("top", "bottom"):
+            deep = (oy1 - oy0) / float(bh)
+            wide = (ox1 - ox0) / float(bw)
+        else:
+            deep = (ox1 - ox0) / float(bw)
+            wide = (oy1 - oy0) / float(bh)
+        if ratio >= 0.03 and deep >= 0.3 and wide >= 0.2:
+            # an arch's mouth is open at the bottom: its "top" is the inside of the arc,
+            # its height runs to the mark's bottom edge (where the door's flat foot lands)
+            opening = {"side": s, "ratio": round(ratio, 3),
+                       "x0": x0 + ox0, "x1": x0 + ox1, "y0": y0 + oy0, "y1": y0 + oy1}
+    # enclosed: empty, reached from no side — keep the largest connected region
+    enc = bytearray(n)
+    for p in range(n):
+        if empty[p] and not (reach["top"][p] or reach["bottom"][p] or reach["left"][p]
+                             or reach["right"][p]):
+            enc[p] = 1
+    hole, seen = None, bytearray(n)
+    for st in range(n):
+        if not enc[st] or seen[st]:
+            continue
+        seen[st] = 1
+        dq, cells = deque([st]), []
+        while dq:
+            p = dq.pop()
+            cells.append(p)
+            x = p % bw
+            for q in ((p - 1) if x > 0 else -1, (p + 1) if x < bw - 1 else -1,
+                      p - bw if p >= bw else -1, p + bw if p < n - bw else -1):
+                if q >= 0 and enc[q] and not seen[q]:
+                    seen[q] = 1
+                    dq.append(q)
+        if hole is None or len(cells) > hole[0]:
+            xs = [p % bw for p in cells]
+            ys = [p // bw for p in cells]
+            hole = (len(cells), {"ratio": round(len(cells) / float(n), 3),
+                                 "x0": x0 + min(xs), "x1": x0 + max(xs) + 1,
+                                 "y0": y0 + min(ys), "y1": y0 + max(ys) + 1})
+    return {"opening": opening, "hole": hole[1] if hole else None}
+
+
+def find_mark(img: Img, knock: Optional[bytearray], holes: List[dict], notes: List[str]):
+    """Locate the logo's mark and split the rest into word parts. Returns (mark dict or
+    None, label array, components, {component id: group name})."""
+    w = img.w
+    lab, comps = _components(img, knock)
+    if not comps:
+        return None, lab, comps, {}
+    total = float(sum(c["area"] for c in comps))
+    big = [c for c in comps if c["area"] >= max(20, 0.004 * total)]
+    if not big:
+        return None, lab, comps, {}
+    amax = max(c["area"] for c in big)
+    hs = sorted(c["box"][3] - c["box"][1] for c in big)
+    hmed = hs[len(hs) // 2]
+    # score every sizeable component
+    cands = sorted(big, key=lambda c: -c["area"])[:16]
+    for c in cands:
+        others = [o for o in big if o is not c]
+        uniq = (sum(1 for o in others if ck.delta_e2000(o["rgb"], c["rgb"]) > 15)
+                / float(len(others))) if others else 0.0
+        sh = _shape(lab, w, c)
+        c["_shape"] = sh
+        op, ho = sh["opening"], sh["hole"]
+        op_r = op["ratio"] if op else 0.0
+        ho_r = ho["ratio"] if ho else 0.0
+        hrel = (c["box"][3] - c["box"][1]) / float(hmed or 1)
+        c["_uniq"], c["_op"], c["_ho"], c["_hrel"] = uniq, op_r, ho_r, hrel
+        c["_score"] = (1.2 * uniq + 1.2 * min(0.6, op_r) + 0.8 * min(0.5, ho_r)
+                       + 0.5 * math.sqrt(c["area"] / float(amax)) + 0.3 * min(1.5, hrel - 1))
+    cands.sort(key=lambda c: -c["_score"])
+    top = cands[0]
+    lone = len(big) <= 2
+    standout = (top["_uniq"] >= 0.6 or
+                (max(top["_op"], top["_ho"]) >= MARK_MIN_OPENING and top["_hrel"] >= 1.2) or
+                lone)
+    if len(cands) > 1 and not top["_uniq"] >= 0.6 and \
+            top["_score"] - cands[1]["_score"] < 0.15 and not lone:
+        standout = False                 # two look-alikes (the two o's of "photo")
+    how = "colour" if top["_uniq"] >= 0.6 else ("shape" if not lone else "only symbol")
+    if not standout:
+        # fall back to the existing hole logic: the component around the best round hole
+        top = None
+        for hh in holes:
+            if hh.get("roundness", 0) < 0.6:
+                continue
+            for c in cands:
+                ho = c["_shape"]["hole"]
+                if ho and ho["x0"] <= hh["cx"] <= ho["x1"] and ho["y0"] <= hh["cy"] <= ho["y1"]:
+                    top = c
+                    break
+            if top:
+                how = "hole"
+                break
+        if top is None:
+            notes.append("no distinct mark found (every part looks like a letter) — the "
+                         "gate outro is not available; portal/line/impact still are")
+            return None, lab, comps, {}
+    # the mark may be several pieces of one colour (an icon drawn in parts)
+    mx0, my0, mx1, my1 = top["box"]
+    ex, ey = 0.15 * (mx1 - mx0), 0.15 * (my1 - my0)
+    group = {top["id"]: "mark"}
+    for c in comps:
+        if c is top:
+            continue
+        cx, cy = (c["box"][0] + c["box"][2]) / 2.0, (c["box"][1] + c["box"][3]) / 2.0
+        if mx0 - ex <= cx <= mx1 + ex and my0 - ey <= cy <= my1 + ey and \
+                ck.delta_e2000(c["rgb"], top["rgb"]) < 12:
+            group[c["id"]] = "mark"
+            mx0, my0 = min(mx0, c["box"][0]), min(my0, c["box"][1])
+            mx1, my1 = max(mx1, c["box"][2]), max(my1, c["box"][3])
+    # the words around it: beside (vertical overlap with the mark) or stacked
+    mh = my1 - my0
+    mcx = (mx0 + mx1) / 2.0
+    for c in comps:
+        if c["id"] in group:
+            continue
+        cx, cy = (c["box"][0] + c["box"][2]) / 2.0, (c["box"][1] + c["box"][3]) / 2.0
+        if my0 - 0.25 * mh <= cy <= my1 + 0.25 * mh:
+            group[c["id"]] = "left" if cx < mcx else "right"
+        else:
+            group[c["id"]] = "below" if cy > my1 else "above"
+    sh = top["_shape"]
+    op, ho = sh["opening"], sh["hole"]
+    if op and op["side"] == "bottom" and op["ratio"] >= MARK_MIN_OPENING and \
+            (not ho or op["ratio"] >= ho["ratio"]):
+        # the mouth of the arch is the mark's bottom edge
+        opening = {"shape": "arch", "cx": round((op["x0"] + op["x1"]) / 2.0, 1),
+                   "top": op["y0"], "w": op["x1"] - op["x0"], "h": my1 - op["y0"],
+                   "side": "bottom"}
+    elif ho and ho["ratio"] >= MARK_MIN_HOLE:
+        opening = {"shape": "hole", "cx": round((ho["x0"] + ho["x1"]) / 2.0, 1),
+                   "cy": round((ho["y0"] + ho["y1"]) / 2.0, 1),
+                   "top": ho["y0"], "w": ho["x1"] - ho["x0"], "h": ho["y1"] - ho["y0"]}
+    else:
+        opening = {"shape": "none", "cx": round(mcx, 1), "top": my0, "w": mx1 - mx0,
+                   "h": mh}
+        if op:
+            opening["side"] = op["side"]
+    mark = {"x": mx0, "y": my0, "w": mx1 - mx0, "h": mh,
+            "colour": ck.rgb_to_hex(top["rgb"]), "how": how,
+            "score": round(top["_score"], 3), "opening": opening}
+    return mark, lab, comps, group
+
+
+def export_mark_parts(img: Img, lab, comps, group, outdir: str) -> Tuple[dict, dict, bool]:
+    """Write mark.png and word_<side>.png, each holding ONLY its own pixels (anti-aliased
+    edges included) at its own bounding box. Returns (part rects, file paths, fill) where
+    fill = the logo paints a translucent light inside the mark's opening (dropped from
+    mark.png so the door stays clear; the outro redraws it as the 'steps through' light)."""
+    from array import array
+    w, h, px = img.w, img.h, img.px
+    n = w * h
+    gid = {"mark": 1, "left": 2, "right": 3, "below": 4, "above": 5}
+    cg = {c["id"]: gid[group.get(c["id"], "right")] for c in comps}
+    own = array("b", bytes(n))
+    for p in range(n):
+        k = lab[p]
+        if k:
+            own[p] = cg.get(k, 0)
+    # anti-aliased fringes (alpha < MARK_ALPHA) join the nearest labelled glyph: 3 passes
+    al = px[3::4]
+    for _ in range(3):
+        upd = []
+        for p in range(n):
+            if own[p] or not al[p]:
+                continue
+            x, y = p % w, p // w
+            for q in ((p - 1) if x > 0 else -1, (p + 1) if x < w - 1 else -1,
+                      p - w if y > 0 else -1, p + w if y < h - 1 else -1):
+                if q >= 0 and own[q]:
+                    upd.append((p, own[q]))
+                    break
+        if not upd:
+            break
+        for p, g in upd:
+            own[p] = g
+    fill = sum(1 for p in range(n) if al[p] > 16 and not own[p]) > 0.01 * n
+    rects, files = {}, {}
+    for name, g in gid.items():
+        xs0, ys0, xs1, ys1 = w, h, -1, -1
+        for y in range(h):
+            row = own[y * w:(y + 1) * w]
+            if g not in row:
+                continue
+            ys0 = min(ys0, y)
+            ys1 = y
+            xs0 = min(xs0, row.index(g))
+            xs1 = max(xs1, w - 1 - row[::-1].index(g))
+        if xs1 < 0:
+            rects[name] = None
+            continue
+        bw, bh = xs1 - xs0 + 1, ys1 - ys0 + 1
+        out = bytearray(bw * bh * 4)
+        for y in range(bh):
+            for x in range(bw):
+                p = (ys0 + y) * w + xs0 + x
+                if own[p] == g:
+                    i, o = p * 4, (y * bw + x) * 4
+                    out[o:o + 4] = px[i:i + 4]
+        fn = os.path.join(outdir, "mark.png" if name == "mark" else f"word_{name}.png")
+        write_png(fn, Img(bw, bh, out))
+        rects[name] = {"x": xs0, "y": ys0, "w": bw, "h": bh}
+        files[name] = _rel(fn)
+    return rects, files, fill
+
+
 # ================================================================ role logic
 
 def assign_roles(palette: List[dict], primary_ovr: Optional[str], accent_ovr: Optional[str],
@@ -854,12 +1193,28 @@ def main(argv=None) -> int:
     write_png(p_dark, silhouette(trimmed, (255, 255, 255), knock))
     write_png(p_light, silhouette(trimmed, ck.hex_to_rgb(colors["ink"]), knock))
 
+    # ---- the mark (the symbol) and the words around it — for the gate outro
+    mark, lab, comps, group = find_mark(trimmed, knock if has_fill else None, holes, notes)
+    if mark:
+        rects, files, fill = export_mark_parts(trimmed, lab, comps, group, a.out)
+        mr = rects.pop("mark")
+        # mark.png's own box (fringes included) is the placement rect
+        mark.update({"x": mr["x"], "y": mr["y"], "w": mr["w"], "h": mr["h"]})
+        mark["parts"] = {k: rects.get(k) for k in ("left", "right", "below", "above")}
+        mark["files"] = files
+        mark["fill"] = fill
+        boxes = [mr] + [r for r in rects.values() if r]
+        mark["content"] = [min(r["x"] for r in boxes), min(r["y"] for r in boxes),
+                           max(r["x"] + r["w"] for r in boxes),
+                           max(r["y"] + r["h"] for r in boxes)]
+
     out = {
         "logo": {"src": _rel(src), "trimmed": _rel(p_trim), "on_dark": _rel(p_dark),
                  "on_light": _rel(p_light),
                  "knocked": _rel(p_knock) if has_fill else "",
                  "w": trimmed.w, "h": trimmed.h,
                  "aspect": round(trimmed.w / float(trimmed.h), 4), "holes": holes,
+                 "mark": mark,
                  "monochrome": res["monochrome"]},
         "colors": colors,
         "palette": [{"hex": c["hex"], "share": round(c["share"], 4)} for c in palette],
@@ -885,6 +1240,12 @@ def main(argv=None) -> int:
     for hh in holes[:3]:
         say(f"    hole  : centre ({hh['cx']}, {hh['cy']}) r {hh['r']} "
             f"(inscribed {hh['r_inscribed']}) roundness {hh['roundness']} [{hh['fill']}]")
+    if mark:
+        o = mark["opening"]
+        parts = ", ".join(f"{k} {v['w']}x{v['h']}" for k, v in mark["parts"].items() if v)
+        say(f"  mark    : {mark['w']}x{mark['h']} at ({mark['x']}, {mark['y']}) "
+            f"{mark['colour']} [{mark['how']}], opening {o['shape']} "
+            f"w {o['w']} h {o['h']} top {o['top']}; words: {parts or 'none'}")
     for n in notes:
         say(f"  note    : {n}")
     say(f"  wrote   : {a.out}/brand.json, brand.css, logo_trim/on_dark/on_light.png, "

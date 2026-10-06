@@ -1,0 +1,23 @@
+      /* ==== KIT hook world (spec 4.4) ====
+         z order: world (10) < cards (13) < the A-roll (20) < tint (21) < widgets (45).
+         The footage flies OVER the world and its cards, and lands over them. */
+      .kt-world { position: absolute; inset: 0; background: var(--world); transform-origin: 50% 60%; opacity: 0; }
+      .kt-hcard { position: absolute; left: ${sky_l}px; right: ${sky_r}px; top: ${card_t}px; height: ${card_h}px;
+        border-radius: 44px; overflow: hidden; background: var(--card); border: 2px solid var(--card-edge);
+        box-shadow: 0 40px 100px rgba(0,0,0,.5); opacity: 0; }
+      .kt-ch { display: flex; align-items: center; justify-content: space-between; padding: 34px 40px;
+        background: var(--card-head); font-size: 46px; font-weight: 800; }
+      .kt-ch > em { display: flex; align-items: center; gap: 8px; font-style: normal; font-size: 34px;
+        font-weight: 600; color: rgba(255,255,255,.5); }
+      .kt-ch > em.kt-wait { color: var(--amber); }
+      .kt-ch > em.kt-ok { color: var(--green); }
+      .kt-ch > em.kt-bad { color: var(--red); }
+      .kt-cb { padding: 0 40px; }
+      .kt-cb > .kt-empty { margin-top: 90px; }
+      .kt-cb > .kt-pg { margin: 20px 10px 0; }
+      .kt-art { position: relative; display: grid; place-items: center; margin-top: 34px; }
+      /* the big gradient title under each card: 140 px, centred in the safe zone, y ≈ 1110 */
+      .kt-hbig { position: absolute; left: ${gx0}px; width: ${gw}px; top: ${hbig_t}px; text-align: center;
+        font-size: 140px; line-height: 1.08; white-space: nowrap; opacity: 0; }
+      .kt-tint { position: absolute; inset: 0; mix-blend-mode: screen; opacity: 0;
+        background: linear-gradient(180deg, rgba(6,18,36,.2), rgba(var(--eblue-rgb), .55)); }

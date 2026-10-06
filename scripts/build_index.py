@@ -407,7 +407,10 @@ def build(cfg, media, bounds, end):
     audio = media.get("audio", {})
     # With an outro, the bed that plays to the A-roll's end is carried to the outro's last
     # frame and fades out ON it (outro.extend_bed) — media.json keeps its spoken-part length.
-    bed_id = outro.bed_to_extend(audio.get("music", []), end) if oplan else None
+    # A bed from scripts/bed.py is "baked": already shaped to the composition end, outro
+    # lift included — extending and automating it again would shape it twice.
+    bed_id = outro.bed_to_extend([m for m in audio.get("music", []) if not m.get("baked")],
+                                 end) if oplan else None
     for group in ("music", "sfx"):
         for s in audio.get(group, []):
             ms = s.get("media_start")
@@ -422,6 +425,8 @@ def build(cfg, media, bounds, end):
                 dur, lane = outro.extend_bed(s, oplan, cfg)
                 extra += lane
                 lim = comp_end
+            elif group == "music" and s.get("baked"):
+                lim = comp_end           # the baked bed already runs to the composition end
             body.append(clip("audio", s["id"], group, float(s["start"]),
                              dur, group, extra, limit=lim))
 

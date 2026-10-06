@@ -15,12 +15,22 @@ the exact caption timings. No node, no puppeteer.
 
 Bonus: re-timing a caption then costs an overlay pass instead of a full re-render.
 
-Caption hiding: build_index.py writes build/caption_hide.json — the windows in which a
-kinetic headline (or any element marked "hide_captions") owns the frame. Inside a window the
-layer is TRANSPARENT; a card that straddles a window edge is split into a visible piece and a
-blank piece. captions.json is never touched and every card keeps its exact slot in the
-concat list, so the layer's total length — and with it the caption timeline, preflight's
-continuity check and finish.py's overlay — stay identical. Only pixels go missing, never time.
+Caption hiding: build_index.py writes build/caption_hide.json — the windows in which the hook
+world, a kinetic headline, a designed moment marked "hide_captions" or the outro owns the frame.
+Inside a window the layer is TRANSPARENT. captions.py already splits cards at window edges, so
+normally a card is either fully hidden ("hidden": true) or fully outside. When captions.json is
+STALE (a headline moved after captions.py ran), a card can cross a window edge. Then:
+  * the piece BEFORE the window shows only the words spoken before the window
+  * the piece AFTER the window RE-STARTS the card with only the words not yet spoken, from
+    the first of those words — never the half card again with words the headline already
+    showed (the old behaviour: the card reappeared with spoken words on it)
+  * a piece with no words left is transparent
+Every card keeps its exact slot in the concat list and the pieces sum to its duration, so the
+layer's length — and with it finish.py's overlay — is unchanged. Only pixels go missing.
+
+Gates (exit 1): a visible piece of the layer that starts inside a hidden window, or shows a
+word spoken inside one. Stale input is reported (re-run captions.py) but fixed, not fatal;
+preflight_qa.py fails a stale captions.json.
 """
 import glob
 import json
@@ -92,14 +102,6 @@ def shoot(chrome, html_path, png_path, w, h):
         sys.exit(f"Chrome produced no screenshot for {html_path}\n{r.stderr[-800:]}")
 
 
-def load_hide(path):
-    """The merged hide windows [[a, b], ...] from build_index.py; [] when there are none."""
-    if not path or not os.path.exists(path):
-        return []
-    d = json.load(open(path, encoding="utf-8"))
-    return sorted([float(a), float(b)] for a, b in (d.get("windows") or []) if float(b) > float(a))
-
-
 def pieces(start, dur, windows, min_piece=0.02):
     """Split one card's [start, start+dur) into (duration, visible) pieces around the hide
     windows. The durations always sum to `dur` exactly — that is the no-drift guarantee.
@@ -136,12 +138,12 @@ def pieces(start, dur, windows, min_piece=0.02):
 def layer_segments(caps):
     """The layer as ABSOLUTE stretches [t0, t1, card-or-None] from t=0, back to back.
 
-    Each card holds until the NEXT card's start, not for its own `dur`: a caption clip's dur
-    is `next − start − 0.005` (the composition's anti-stacking gap), and feeding those to the
+    Each card holds until the NEXT card's start when the two are back to back (a caption's
+    dur is `next − start − 0.005`, the composition's anti-stacking gap; feeding those to the
     concat demuxer made every card start 0.005 s earlier than the one before it — 3 frames
-    early by card 27, 7 by card 57 (measured). A real gap (> 1 frame of nothing) and any time
-    before the first card become transparent stretches, so the layer's clock is the
-    composition's clock."""
+    early by card 27, 7 by card 57, measured). A real gap (a trimmed pause, a hidden window)
+    and any time before the first card become transparent stretches, so the layer's clock is
+    the composition's clock. Hidden cards are transparent stretches too."""
     segs, t = [], 0.0
     for k, c in enumerate(caps):
         s0 = float(c["start"])
@@ -149,13 +151,75 @@ def layer_segments(caps):
         nxt = float(caps[k + 1]["start"]) if k + 1 < len(caps) else e0
         if s0 > t + 1e-6:
             segs.append([t, s0, None])
+        s0 = max(s0, t)
         end = nxt if nxt - e0 <= 0.0055 + 1e-6 else e0
-        segs.append([s0, end, c])
+        end = max(end, s0)
+        segs.append([s0, end, None if c.get("hidden") else c])
         t = end
         if end < nxt - 1e-6:
             segs.append([end, nxt, None])
             t = nxt
     return segs
+
+
+def plan_layer(segs, windows, frame=0.04):
+    """[(t0, t1, card-or-None, words-shown-or-None)] — the visible pieces carry the exact
+    words they show. See the module docstring for the re-start rule."""
+    import captions as capmod
+    out = []
+    for t0, t1, c in segs:
+        if c is None:
+            out.append((t0, t1, None, None))
+            continue
+        words = c.get("words")
+        t = t0
+        for d, vis in pieces(t0, t1 - t0, windows):
+            p0, p1 = t, t + d
+            t = p1
+            if not vis:
+                out.append((p0, p1, None, None))
+                continue
+            if not words:                       # an old captions.json without word times
+                if p0 > t0 + 1e-6:
+                    out.append((p0, p1, None, None))   # never replay a half card blind
+                else:
+                    out.append((p0, p1, c, None))
+                continue
+            shown = [w for w in words if capmod.zone_of(w[0], windows) < 0 and w[0] < p1 - 1e-6
+                     and (p0 <= t0 + 1e-6 or w[0] >= p0 - frame)]
+            if not shown:
+                out.append((p0, p1, None, None))
+                continue
+            first = shown[0][0]
+            if p0 > t0 + 1e-6 and first > p0 + frame / 2:
+                # re-start: transparent until the first unspoken word, then the rest of the card
+                q = capmod.snap(first)
+                if q >= p1 - 1e-6:
+                    out.append((p0, p1, None, None))
+                    continue
+                if q > p0 + 1e-6:
+                    out.append((p0, q, None, None))
+                    p0 = q
+            out.append((p0, p1, c, shown if len(shown) < len(words) else None))
+    return out
+
+
+def gate(plan, windows, frame=0.04):
+    """The layer's own assertions. Returns a list of problems."""
+    import captions as capmod
+    bad = []
+    for p0, p1, c, shown in plan:
+        if c is None or p1 - p0 < 1e-6:
+            continue
+        win = capmod.inside(p0, windows)
+        if win:
+            bad.append(f"c{c['i']:02d} visible from {p0:.2f}s, inside hidden window "
+                       f"{win[0]:.2f}-{win[1]:.2f}")
+        for w in (shown if shown is not None else (c.get("words") or [])):
+            if capmod.zone_of(w[0], windows) >= 0:
+                bad.append(f"c{c['i']:02d} shows '{w[2]}' ({w[0]:.2f}s), a word spoken inside "
+                           f"a hidden window — the headline already showed it")
+    return bad
 
 
 def blank_png(path, w, h):
@@ -176,6 +240,8 @@ def main():
     ap.add_argument("--workdir", default="build/caps")
     ap.add_argument("--hide", default="build/caption_hide.json",
                     help="hide windows written by build_index.py (headlines, hide_captions)")
+    ap.add_argument("--outro", default="build/outro.json",
+                    help="the outro plan: captions are hidden from its start")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
@@ -200,41 +266,70 @@ def main():
     os.makedirs(png_dir, exist_ok=True)
     chrome = hfcfg.chrome_path()
 
-    windows = load_hide(a.hide)
-    segs = layer_segments(caps)
-    plan = [(c, pieces(t0, t1 - t0, windows)) for t0, t1, c in segs]
-    for c in caps:
-        if not any(vis for cc, ps in plan if cc is c for _, vis in ps):
-            continue                     # fully hidden: no still needed
+    import captions as capmod
+    windows = capmod.load_hide(a.hide, a.outro) if a.hide else []
+    stale = [c for c in caps if not c.get("hidden") and capmod.inside(float(c["start"]), windows)]
+    cross = [c for c in caps if not c.get("hidden") and any(
+        float(c["start"]) < x < float(c["start"]) + float(c["dur"]) - 1e-6 for x, _ in windows)]
+    plan = plan_layer(layer_segments(caps), windows, 1.0 / fps)
+    problems = gate(plan, windows, 1.0 / fps)
+
+    def still(c, shown):
+        key = f"c{c['i']:03d}" if shown is None else \
+            f"c{c['i']:03d}_{len(shown)}w{int(round(shown[0][0] * 100))}"
+        png = os.path.join(png_dir, key + ".png")
+        if key in made:
+            return png
+        made.add(key)
+        text = c["text"] if shown is None else capmod.render_text(
+            [tuple(w) for w in shown], cfg["language"]["direction"])
         # The slot comes from the beat map — never from a second, hand-kept table.
         top = grid.slot_top(cfg, beatmap, c["start"])
-        hp = os.path.join(html_dir, f"c{c['i']:03d}.html")
+        hp = os.path.join(html_dir, key + ".html")
         with open(hp, "w", encoding="utf-8") as f:
             f.write(PAGE.format(W=W, H=H, faces=faces, top=top,
                                 left=g["safe"][0], width=g["safe_width"],
                                 dir=cfg["language"]["direction"], family=b["font_family"],
                                 size=c.get("size", b["caption_size"]),
-                                paint=grid.caption_css(cfg), text=c["text"]))
-        shoot(chrome, hp, os.path.join(png_dir, f"c{c['i']:03d}.png"), W, H)
-    shown = sum(1 for c in caps if any(vis for cc, ps in plan if cc is c for _, vis in ps))
-    print(f"  rendered {shown} cards" + (f" ({len(caps) - shown} fully hidden)" if shown < len(caps) else ""))
-    # absolute: the concat demuxer resolves a relative path against concat.txt's folder
+                                paint=grid.caption_css(cfg), text=text))
+        shoot(chrome, hp, png, W, H)
+        return png
+
+    made = set()
     blank = os.path.abspath(blank_png(os.path.join(png_dir, "blank.png"), W, H))
+    entries = []
+    for p0, p1, c, shown in plan:
+        if p1 - p0 < 1e-6:
+            continue
+        img = blank if c is None else os.path.abspath(still(c, shown))
+        if entries and entries[-1][0] == img:
+            entries[-1][1] += p1 - p0
+        else:
+            entries.append([img, p1 - p0])
+    shown_cards = {c["i"] for _, _, c, _ in plan if c is not None}
+    print(f"  rendered {len(made)} stills for {len(shown_cards)} visible cards"
+          f" ({len(caps) - len(shown_cards)} hidden)")
     if windows:
-        cut = sum(1 for c, ps in plan if c is not None and len(ps) > 1)
-        print(f"  hidden over {len(windows)} window(s) from {a.hide}: "
-              + ", ".join(f"{x:.2f}-{y:.2f}" for x, y in windows)
-              + (f" — {cut} card(s) split at a window edge" if cut else ""))
+        print(f"  hidden over {len(windows)} window(s): "
+              + ", ".join(f"{x:.2f}-{y:.2f}" for x, y in windows))
+    restarted = [(p0, c, shown) for p0, p1, c, shown in plan if c is not None and shown is not None]
+    if stale or cross:
+        print(f"  ! captions.json is STALE against {a.hide}: {len(stale)} card(s) start inside "
+              f"a window, {len(cross)} cross a window edge — handled here (trimmed to the words "
+              f"before the window, re-started after it), but run captions.py again so "
+              f"captions.json matches:")
+        for c in (stale + cross)[:8]:
+            print(f"      c{c['i']:02d} {float(c['start']):.2f}s '{c['plain']}'")
+    for p0, c, shown in restarted:
+        print(f"      c{c['i']:02d} piece at {p0:.2f}s shows only: {' '.join(w[2] for w in shown)}")
 
     lst = os.path.join(a.workdir, "concat.txt")
     last = None
     with open(lst, "w") as f:
-        for c, ps in plan:
-            for d, vis in ps:
-                last = (f"{os.path.abspath(png_dir)}/c{c['i']:03d}.png"
-                        if vis and c is not None else blank)
-                f.write(f"file '{last}'\n")
-                f.write(f"duration {d:.6f}\n")
+        for img, d in entries:
+            last = img
+            f.write(f"file '{img}'\n")
+            f.write(f"duration {d:.6f}\n")
         f.write(f"file '{last}'\n")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
@@ -254,6 +349,11 @@ def main():
     if dur and abs(float(dur) - want) > 0.12:
         print(f"  ! layer length {float(dur):.2f}s vs caption timeline {want:.2f}s — "
               f"the overlay will drift; check captions.json durations")
+    if problems:
+        print("  ✗ " + "\n  ✗ ".join(problems))
+        return 1
+    print("  ✓ no visible caption starts inside a hidden window, none replays a word the "
+          "headline already showed")
     return 0
 
 

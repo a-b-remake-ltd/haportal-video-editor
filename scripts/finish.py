@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Composite the caption layer onto the render and write the SDR master.
 
-Two jobs:
+Three jobs:
   1. overlay assets/captions.webm (VP9 + alpha) onto the HyperFrames render
   2. force the master to 8-bit bt709 SDR H.264 — and ASSERT it
+  3. master the audio to −14 LUFS ± 0.4, true peak ≈ −1.3 dBTP, AAC 320k — measured on
+     the encoded file and iterated (references/sound.md §Mastering). A quiet, peaky
+     AI-avatar render gets pre-gain + compression before the limiter; a normal voice a
+     gentle chain. `--audio-only mix.wav` runs (3) alone, to test a mix without a render.
 
 (2) matters because phone B-roll is HLG/bt2020, and when any HDR media is in the
 composition HyperFrames renders HEVC 10-bit bt2020/HLG. Every player then applies an
@@ -33,25 +37,76 @@ def loudness(src, chain):
     return (float(i[-1]) if i else None), (float(tp[-1]) if tp else None)
 
 
-def master_chain(src, target, ceiling=-1.5):
-    """The house master: a GENTLE compressor first, then gain to the target, then a
-    limiter with its auto-makeup OFF (level=disabled — with makeup on, alimiter puts the
-    peak straight back). Loudness-normalising in dynamic mode pumps; this does not.
-    Reels normalise to about -14 LUFS, so a -22 LUFS master just plays quieter than the
-    video before it. Two measured passes, because the limiter shaves a little."""
-    comp = "acompressor=threshold=-24dB:ratio=2.5:attack=8:release=180:makeup=1"
-    lim = f"alimiter=limit={10 ** (ceiling / 20):.4f}:level=disabled:attack=5:release=60"
-    i0, _ = loudness(src, comp)
+# ------------------------------------------------------------------ the master (§8)
+# Two chains, picked by how loud the render comes in:
+#   QUIET / PEAKY (≈ −30 LUFS or below — AI-avatar voices often arrive near −36 LUFS with
+#   a −40 dB mean): pre-gain, then a compressor that tames the peaks BEFORE the limiter.
+#   Without it the limiter clamps the voice peaks and the master sticks near −16 LUFS no
+#   matter how much gain goes in (measured: −15.9 with the old one-stage chain).
+#   NORMAL (≈ −20 LUFS): a gentle compressor, no pre-gain.
+# Then gain to a pre-limiter target, a 4× oversampled (192 kHz) limiter at 0.84 (−1.5 dBFS,
+# true peak ≈ −1.3) with auto-level OFF (level=true puts the peak straight back), AAC 320k.
+# The pre-limiter target starts at −12.8 (quiet) / −13.4 (normal) — the limiter shaves
+# about a dB — and is iterated on the MEASURED master until −14 ± 0.4 LUFS.
+QUIET_BELOW = -25.0          # integrated LUFS of the render: at or below → the quiet chain
+LIMITER = "alimiter=limit=0.84:attack=2:release=60:level=false"
+
+
+def comp_chain(i0):
+    """(name, compressor chain, starting pre-limiter offset vs the target) for a render
+    measuring i0 LUFS. The quiet chain's pre-gain is 20 dB for the reference (−36 LUFS)
+    and scales down for less quiet input, so the compressor always sees ~−16 LUFS."""
+    if i0 is not None and i0 <= QUIET_BELOW:
+        pre = max(0.0, min(20.0, round(-16.0 - i0)))
+        return (f"quiet ({i0:.1f} LUFS → +{pre:.0f} dB pre-gain + compressor)",
+                f"volume={pre:.0f}dB,acompressor=threshold=0.06:ratio=3:attack=4:release=140:makeup=1",
+                1.2)
+    return (f"normal ({i0:.1f} LUFS → gentle compressor)",
+            "acompressor=threshold=0.08:ratio=2:attack=4:release=140:makeup=1", 0.6)
+
+
+def master_audio(src, out, target=-14.0, tol=0.4, work="build"):
+    """Master src's audio to an AAC 320k file at `target` LUFS. Returns a dict with the
+    chain, the measured loudness and true peak of the ENCODED file, and the passes."""
+    os.makedirs(work, exist_ok=True)
+    i0, tp0 = loudness(src, "")
     if i0 is None:
-        return None, None, None
-    gain = target - i0
-    for _ in range(2):
-        chain = f"{comp},volume={gain:.2f}dB,{lim}"
-        i1, tp = loudness(src, chain)
-        if i1 is None or abs(i1 - target) <= 0.3:
+        return None
+    name, comp, lead = comp_chain(i0)
+    c = os.path.join(work, "master_c.wav")
+    # float intermediate: the pre-gained signal can exceed 0 dBFS before the limiter, and a
+    # fixed-point wav would clip it right there
+    r = hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vn", "-af", comp,
+                   "-c:a", "pcm_f32le", c])
+    if r.returncode:
+        sys.exit(f"compressor pass failed:\n{r.stderr}")
+    ic, _ = loudness(c, "")
+    pre_target = target + lead
+    passes = []
+    for _ in range(5):
+        gain = pre_target - ic
+        chain = f"aresample=192000,volume={gain:.2f}dB,{LIMITER},aresample=48000"
+        r = hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", c, "-af", chain,
+                       "-c:a", "aac", "-b:a", "320k", "-ar", "48000", out])
+        if r.returncode:
+            sys.exit(f"master encode failed:\n{r.stderr}")
+        im, tp = loudness(out, "")          # measure the ENCODED master, not the chain
+        passes.append((round(pre_target, 2), im, tp))
+        if im is None or abs(im - target) <= min(tol, 0.15):
             break
-        gain += target - i1
-    return f"{comp},volume={gain:.2f}dB,{lim}", i1, tp
+        pre_target += target - im
+    ok = im is not None and abs(im - target) <= tol
+    return {"input_lufs": i0, "input_tp": tp0, "chain_name": name, "comp": comp,
+            "limiter": chain, "lufs": im, "tp": tp, "passes": passes, "ok": ok}
+
+
+def report_master(m, target):
+    print(f"  master: render {m['input_lufs']:.1f} LUFS / {m['input_tp']:.1f} dBTP, "
+          f"chain {m['chain_name']}")
+    for i, (pt, im, tp) in enumerate(m["passes"], 1):
+        print(f"    pass {i}: pre-limiter {pt:.2f} → {im:.1f} LUFS, true peak {tp:.1f} dBTP")
+    mark = "✓" if m["ok"] else "✗ OUTSIDE ±0.4"
+    print(f"  {mark} {m['lufs']:.1f} LUFS (target {target:.0f}), true peak {m['tp']:.1f} dBTP, AAC 320k")
 
 
 def newest_render(d="renders"):
@@ -73,9 +128,23 @@ def main():
                     help="copy the render's audio untouched (skip the -14 LUFS master)")
     ap.add_argument("--no-captions", action="store_true",
                     help="captions already live in the composition (verified non-ghosting)")
+    ap.add_argument("--audio-only", metavar="MIX",
+                    help="master just this file's audio to --out (.m4a): test a mix "
+                         "without a render")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
+    target = float(cfg["render"].get("target_lufs", -14.0))
+
+    if a.audio_only:
+        out = a.out if a.out.endswith((".m4a", ".mp4", ".aac")) and a.out != "renders/final.mp4" \
+            else os.path.splitext(a.audio_only)[0] + "_master.m4a"
+        m = master_audio(a.audio_only, out, target)
+        if not m:
+            sys.exit("no audio measured")
+        report_master(m, target)
+        print(f"  → {out}")
+        return 0 if m["ok"] else 1
 
     base = a.base or newest_render()
     br = cfg["render"]["video_bitrate"]
@@ -107,13 +176,17 @@ def main():
 
     acodec = ["-c:a", "copy"]
     if not a.no_loudness:
-        target = float(cfg["render"].get("target_lufs", -14.0))
-        before, _ = loudness(base, "")
-        chain, after, tp = master_chain(base, target)
-        if chain:
-            acodec = ["-af", chain, "-c:a", "aac", "-b:a", "320k", "-ar", "48000"]
-            print(f"  loudness {before:.1f} → {after:.1f} LUFS (target {target:.0f}), "
-                  f"true peak {tp:.1f} dBTP")
+        # Master the audio on its own first (cheap to iterate: no video re-encode), then mux
+        # the measured AAC into the video untouched.
+        m = master_audio(base, "build/master_audio.m4a", target)
+        if m:
+            report_master(m, target)
+            ai = cmd.count("-i")                # index of the next input
+            last = max(i for i, x in enumerate(cmd) if x == "-i") + 2
+            cmd[last:last] = ["-i", "build/master_audio.m4a"]   # inputs before output options
+            amap = f"{ai}:a"
+            cmd = [amap if x == "0:a" else x for x in cmd]
+            acodec = ["-c:a", "copy"]
 
     maxrate = str(int(float(br.rstrip("Mm")) * 1.125)) + "M"
     bufsize = str(int(float(br.rstrip("Mm")) * 2)) + "M"

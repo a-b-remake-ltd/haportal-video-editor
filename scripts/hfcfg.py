@@ -32,12 +32,17 @@ DEFAULTS = {
     "brand": {"font_family": "Heebo", "display_family": "", "font_dir": "assets/fonts",
               "css": "brand/brand.css", "logo": "",
               "accent": "#4fe6d8", "accent_alt": "#3d8bff", "accent_warm": "#D97757",
-              "good": "#35e06b", "caption_size": 70,
+              "good": "#35e06b", "caption_size": 62,
               "caption_plate": "rgba(255,255,255,0.82)", "caption_ink": "#0a0a0a"},
-    # Caption look. "plate" = black on a translucent white plate (the house default);
-    # "shadow" = white text with a soft shadow, no box. A reference analysis may switch it.
-    "captions": {"style": "plate", "max_words": 4, "weight": 800,
-                 "shadow_color": "#ffffff"},
+    # Caption look (references/captions.md). The default is the premium motion-edit card:
+    # 1-3 words, hard swap, white 62 px weight 500 with a soft shadow and no box. It reads
+    # on a dark shirt and stays out of the way of the headlines and designed moments,
+    # which carry the emphasis. "plate" = black on a translucent white plate, for busy or
+    # bright footage. lead = seconds a card appears before its first word (0 = on the word).
+    # center_y is written by framing_map.py --apply (or apply_style.py from a reference).
+    "captions": {"style": "shadow", "max_words": 3, "weight": 500,
+                 "shadow_color": "#ffffff", "lead": 0.0,
+                 "pause_trim": 0.6, "pause_tail": 0.3},
     "grid": {"profile": "reels"},
     # Written by scripts/apply_style.py from an analysed reference; empty = house style.
     "style": {},
