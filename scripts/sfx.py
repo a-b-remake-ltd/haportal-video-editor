@@ -396,7 +396,7 @@ def place(cues, words, voice, end=None, sdir=SFX_DIR, voice_mean=None):
     """Scale cues to the voice and move them off words (§7.3).
 
     cues: [{"name", "t", "base_vol" (or "vol"), "exempt"}] or [t, "name[!]", base_vol]
-          ("!" = exempt, the owner's shorthand).
+          ("!" = exempt).
     Returns (entries for media.json audio.sfx, report dict)."""
     vm = voice_mean if voice_mean is not None else ak.mean_volume(voice)
     k = max(0.03, min(1.0, 10 ** (((vm if vm is not None else -16.1) + 16.1) / 20)))

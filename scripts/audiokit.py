@@ -236,7 +236,7 @@ def credits(key):
 
 
 def require_credits(key, need, what):
-    """Stop BEFORE spending if the account cannot cover `need` credits (the owner's rule:
+    """Stop BEFORE spending if the account cannot cover `need` credits (the house rule:
     find out up front, not halfway through a batch). Returns the remaining balance."""
     left, lim, tier = credits(key)
     if left is None:
