@@ -1,0 +1,116 @@
+{
+  "_comment": "Copy this to your project as config.json. Nothing personal belongs in the skill itself. Hebrew-first defaults; change language.code/direction for other languages.",
+
+  "project": {
+    "name": "my-reel",
+    "topic": "short-topic-name",
+    "fps": 25,
+    "width": 1080,
+    "height": 1920
+  },
+
+  "language": {
+    "code": "he",
+    "direction": "rtl",
+    "_comment_transcriber": "auto = ivrit.ai Hebrew Whisper for 'he', large-v3 otherwise (free, local). 'scribe' = ElevenLabs, paid, needs ELEVENLABS_API_KEY.",
+    "transcriber": "auto",
+    "whisper_model": "",
+    "glossary": ["AI"],
+    "typos": {},
+    "merge_next": {},
+    "locked_phrases": [],
+    "clause_openers": [],
+    "sticky_words": []
+  },
+
+  "grid": {
+    "_comment": "reels = organic Instagram Reels (default). ads = Meta's stricter safe zone for paid placements.",
+    "profile": "reels"
+  },
+
+  "brand": {
+    "_comment_fonts": "Free fonts only — see `python3 scripts/fonts.py list --hebrew`. display_family is optional (headlines, outro).",
+    "font_family": "Heebo",
+    "display_family": "",
+    "font_dir": "assets/fonts",
+    "_comment_logo": "Give a logo and run scripts/brand_from_logo.py — it writes brand/brand.json + brand/brand.css, which recolour every card and highlight.",
+    "logo": "",
+    "css": "brand/brand.css",
+    "accent": "#4fe6d8",
+    "accent_alt": "#3d8bff",
+    "accent_warm": "#D97757",
+    "good": "#35e06b",
+    "caption_size": 70,
+    "caption_plate": "rgba(255,255,255,0.82)",
+    "caption_ink": "#0a0a0a"
+  },
+
+  "captions": {
+    "_comment": "style: plate (black on a white plate, house default) | shadow (white, soft shadow). center_y is set by apply_style.py from a reference, clamped to the grid.",
+    "style": "plate",
+    "max_words": 4,
+    "weight": 800,
+    "shadow_color": "#ffffff"
+  },
+
+  "style": {
+    "_comment": "Filled by scripts/apply_style.py from an analysed reference video. Empty = house style."
+  },
+
+  "outro": {
+    "_comment": "Opt-in: only with a logo AND when the user asked for it. style: portal (signature) | line | impact.",
+    "enabled": false,
+    "style": "portal",
+    "tagline": "",
+    "handle": ""
+  },
+
+  "cutting": {
+    "onset_db": -26.0,
+    "onset_rel_db": 12.0,
+    "speech_lead": 0.04,
+    "gap_ratio": 0.60,
+    "gap_min": 0.15,
+    "gap_max": 0.32,
+    "gap_topic_boundary": 0.26,
+    "lead": 0.06,
+    "tail_min": 0.09,
+    "tail_last": 0.45,
+    "fade_in": 0.02,
+    "fade_out": 0.055,
+    "drop": [],
+    "merge": []
+  },
+
+  "matting": {
+    "_comment": "Rotoscoping is optional and heavy (torch). Install with: python3 scripts/doctor.py --install --with-roto",
+    "backbone": "resnet50",
+    "downsample_ratio": 0.45,
+    "crf": 10,
+    "alpha_floor": 0.06,
+    "alpha_span": 0.88
+  },
+
+  "audio": {
+    "bgm_under_voice": 0.056,
+    "bgm_after_flare": 0.135,
+    "music_db_under_voice": 16,
+    "music_character": "",
+    "sfx_target_db_below_voice": 7.0,
+    "music_dir": "",
+    "sfx_dir": "assets/sfx"
+  },
+
+  "render": {
+    "video_bitrate": "32M",
+    "target_peak_db": -1.5,
+    "target_lufs": -14.0
+  },
+
+  "paths": {
+    "archive_root": "",
+    "exports": "",
+    "projects": "",
+    "assets": ""
+  }
+}

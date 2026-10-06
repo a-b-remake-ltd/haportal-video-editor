@@ -1,0 +1,10 @@
+      /* chips: 2-4 pills popping on the word that names them. RTL row: the first item sits
+         on the RIGHT. Dark brand glass; an "accent" chip takes --hl-on-dark (one per frame). */
+      .m-chips { position: absolute; z-index: 45; left: ${gx0}px; width: ${gw}px; display: flex;
+                 flex-wrap: wrap; justify-content: center; gap: 18px 18px; direction: ${dir};
+                 font-family: var(--brand-font), "Inter", sans-serif; }
+      .m-chip { display: inline-flex; align-items: center; padding: 16px 34px 20px; border-radius: 999px;
+                font-weight: 800; color: #fff; white-space: nowrap; opacity: 0;
+                background: color-mix(in srgb, var(--brand-grad-a) 88%, transparent);
+                border: 2px solid rgba(255,255,255,.16); box-shadow: 0 16px 44px rgba(0,0,0,.45); }
+      .m-chip.m-acc { background: var(--hl-on-dark); color: var(--brand-ink); border-color: transparent; }

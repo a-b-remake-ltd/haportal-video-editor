@@ -1,0 +1,14 @@
+      /* checklist: the bottom card (KO .bc) — anchored to the grid's bottom line (y ${gy1}),
+         growing UP, at most ${bcmax} px, so it ends under the caption band and never covers
+         the face. Paper look by default; "dark" = the brand card gradient. */
+      .m-check { position: absolute; z-index: 45; left: ${gx0}px; width: ${gw}px; bottom: ${bottom}px;
+                 max-height: ${bcmax}px; overflow: hidden; border-radius: 22px; padding: 24px 36px 26px;
+                 background: var(--brand-paper); color: var(--brand-ink); direction: ${dir};
+                 font-family: var(--brand-font), "Inter", sans-serif; opacity: 0;
+                 box-shadow: 0 24px 70px rgba(0,0,0,.42); }
+      .m-check::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 6px;
+                 background: var(--m-rule); }
+      .m-check.m-dark { --m-rule: var(--hl-on-dark); color: #fff;
+                 background: linear-gradient(163deg, var(--brand-grad-a), var(--brand-grad-b));
+                 border: 2px solid color-mix(in srgb, var(--hl-on-dark) 30%, transparent); }
+      .m-check.m-dark .m-c-title { color: var(--hl-on-dark); }

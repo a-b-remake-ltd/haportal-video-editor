@@ -1,0 +1,20 @@
+      /* question: a viewer's comment card (KO qcard) — avatar initials, name, and the question
+         revealed word by word as it is spoken. On footage it rises from the bottom like a
+         comment, inside the grid; on paper it is a child of the page. */
+      .m-q { position: absolute; z-index: 45; left: ${qx}px; width: ${qw}px; bottom: ${qbottom}px;
+             background: #fff; color: var(--brand-ink); border-radius: 30px; padding: 34px 42px 40px;
+             overflow: hidden; direction: ${dir}; opacity: 0;
+             font-family: var(--brand-font), "Inter", sans-serif;
+             box-shadow: 0 30px 80px rgba(0,0,0,.42); }
+      .m-q::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 7px;
+             background: var(--m-rule); }
+      .m-q.m-onpaper { position: relative; left: auto; bottom: auto; z-index: auto;
+             border: 1.5px solid color-mix(in srgb, var(--brand-ink) 12%, transparent);
+             box-shadow: 0 22px 60px color-mix(in srgb, var(--brand-ink) 14%, transparent); }
+      .m-q-who { display: flex; align-items: center; gap: 22px; font-size: 40px; font-weight: 700;
+             white-space: nowrap; }
+      .m-q-who i { width: 84px; height: 84px; border-radius: 50%; flex: none; display: grid;
+             place-items: center; font-style: normal; font-size: 36px; font-weight: 800;
+             background: var(--brand-primary); color: var(--brand-on-primary); }
+      .m-q-who small { font-size: 28px; font-weight: 400; opacity: .55; }
+      .m-q-t { margin-top: 22px; font-weight: 700; line-height: 1.22; }

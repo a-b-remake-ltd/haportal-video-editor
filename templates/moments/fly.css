@@ -1,0 +1,18 @@
+      /* fly: the Rollin hook move. The footage shrinks into a rounded card and flies up out
+         of frame (motion blur) into a brand-gradient world, which sits UNDER #aroll (20) so
+         the shrinking card reveals it. Optional big lines and floating cards live there. */
+      .m-fly { position: absolute; inset: 0; z-index: 18; overflow: hidden; direction: ${dir};
+               font-family: var(--brand-font), "Inter", sans-serif; }
+      .m-fly .m-f-in { position: absolute; inset: 0; transform-origin: ${cx}px 50%; }
+      .m-fly .m-f-lines { position: absolute; left: ${gx0}px; width: ${gw}px; text-align: center;
+               color: #fff; line-height: 1.04; }
+      .m-fly .m-ln { white-space: nowrap; }
+      .m-fly .m-k { background: linear-gradient(100deg, var(--hl-on-dark) 10%,
+                     color-mix(in srgb, var(--hl-on-dark) 40%, #ffffff) 90%);
+                    -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .m-f-card { position: absolute; opacity: 0; border-radius: 30px; padding: 24px 38px 30px;
+                  font-size: 52px; font-weight: 800; color: #fff; white-space: nowrap;
+                  background: rgba(255,255,255,.13); border: 2px solid rgba(255,255,255,.24);
+                  box-shadow: 0 24px 60px rgba(0,0,0,.35); }
+      .m-f-card.m-img { padding: 0; overflow: hidden; width: 230px; height: 230px; }
+      .m-f-card.m-img img { width: 100%; height: 100%; object-fit: cover; display: block; }

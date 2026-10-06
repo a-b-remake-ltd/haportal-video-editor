@@ -1,0 +1,14 @@
+      /* stamp: a slam (KO stampIn / the ₪0 stamp). The row is a fixed, unrotated box centred on
+         the safe zone; only the inner plate is scaled and rotated by the timeline. */
+      .m-stamp { position: absolute; z-index: 46; left: ${gx0}px; width: ${gw}px; display: flex;
+                 justify-content: center; direction: ${dir};
+                 font-family: var(--brand-font), "Inter", sans-serif; }
+      .m-st { display: inline-block; padding: 12px 34px 18px; border: 7px solid currentColor;
+              border-radius: 14px; font-weight: 900; line-height: 1.02; white-space: nowrap;
+              text-align: center; opacity: 0; color: var(--hl-on-light);
+              background: color-mix(in srgb, var(--brand-paper) 95%, transparent);
+              box-shadow: 0 22px 60px rgba(0,0,0,.38); }
+      .m-st.m-warn { color: var(--m-warn); }
+      .m-st.m-ink { background: transparent; box-shadow: none; }
+      .m-st small { display: block; font-size: .36em; font-weight: 700; letter-spacing: .04em;
+              margin-top: 4px; }

@@ -1,0 +1,32 @@
+      /* paper: the PAPER WORLD + the PAGE TURN (house signature, brand-coloured).
+         #<id>        18  the paper page, UNDER #aroll (20): the footage is wiped OFF it.
+         .m-wipe      25  the brand hairline that turns the page, above the footage. */
+      .m-paper { position: absolute; inset: 0; z-index: 18; overflow: hidden;
+                 background: var(--brand-paper); color: var(--brand-ink); direction: ${dir};
+                 font-family: var(--brand-font), "Inter", sans-serif; }
+      .m-paper .m-p-frame { position: absolute; inset: 44px;
+                 border: 1.5px solid color-mix(in srgb, var(--m-rule) 60%, transparent); }
+      .m-paper .m-p-wm { position: absolute; overflow: hidden; }
+      .m-paper .m-p-wm i { position: absolute; background-size: 100% 100%;
+                 background-repeat: no-repeat; }
+      .m-paper .m-p-col { position: absolute; left: ${gx0}px; top: ${gy0}px; width: ${gw}px;
+                 height: ${gh}px; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 44px; transform-origin: ${col_ox}px 50%; }
+      .m-paper .m-p-kicker { font-size: 34px; font-weight: 700; letter-spacing: .06em;
+                 color: var(--hl-on-light); white-space: nowrap; }
+      .m-paper .m-p-lines { text-align: center; line-height: 1.1; color: var(--brand-ink); }
+      .m-paper .m-ln { white-space: nowrap; }
+      .m-paper .m-k { color: var(--hl-on-light); }
+      .m-wipe { position: absolute; left: 0; top: 0; width: 5px; height: ${H}px; z-index: 25;
+                background: var(--m-rule); box-shadow: 0 0 24px rgba(0,0,0,.18); }
+      /* a sheet on the paper: white paper on bone, hairline top, check rows */
+      .m-sheet { position: relative; width: 760px; background: #fff; border-radius: 10px;
+                 border: 1.5px solid color-mix(in srgb, var(--brand-ink) 12%, transparent);
+                 box-shadow: 0 22px 60px color-mix(in srgb, var(--brand-ink) 14%, transparent);
+                 padding: 40px 48px 44px; overflow: hidden; color: var(--brand-ink); opacity: 0; }
+      .m-sheet::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 6px;
+                 background: var(--m-rule); }
+      .m-sheet .m-c-title { font-size: 36px; }
+      .m-sheet .m-row { font-size: 52px; margin-top: 18px; padding-bottom: 14px;
+                 border-bottom: 1.5px dashed color-mix(in srgb, var(--brand-ink) 22%, transparent); }
+      .m-sheet .m-row:last-child { border-bottom: 0; padding-bottom: 0; }

@@ -1,0 +1,9 @@
+      /* check rows — shared by the checklist bottom card and the paper sheet */
+      .m-c-title { font-size: 30px; font-weight: 800; letter-spacing: .04em; color: var(--hl-on-light);
+                   white-space: nowrap; }
+      .m-row { display: flex; align-items: center; gap: 16px; margin-top: 10px; font-size: 38px;
+               font-weight: 700; line-height: 1.15; white-space: nowrap; opacity: 0; }
+      .m-ck { width: 1.1em; height: 1.1em; flex: none; overflow: visible; }
+      .m-ck circle { fill: none; stroke: var(--m-rule); stroke-width: 3; }
+      .m-ck path { fill: none; stroke: var(--m-rule); stroke-width: 4.2; stroke-linecap: round;
+                   stroke-linejoin: round; stroke-dasharray: 30; stroke-dashoffset: 30; }

@@ -1,0 +1,24 @@
+      /* searchbar: a search pill whose query types itself in sync with the speech (Rollin).
+         Optional gradient world behind it that dissolves back to the footage while the
+         typing continues. The typed query IS the caption, so captions are hidden. */
+      .m-search { position: absolute; inset: 0; z-index: 45; direction: ${dir};
+                  font-family: var(--brand-font), "Inter", sans-serif; }
+      .m-world { position: absolute; inset: 0;
+                 background: linear-gradient(180deg, var(--brand-grad-b) 0%, var(--brand-grad-a) 44%,
+                   color-mix(in srgb, var(--hl-on-dark) 78%, var(--brand-grad-a)) 100%); }
+      .m-search .m-world { opacity: 0; }
+      .m-s-pill { position: absolute; left: ${px}px; width: ${pw}px; display: flex; align-items: center;
+                  gap: 22px; padding: 26px 40px 30px; border-radius: 999px; opacity: 0;
+                  background: color-mix(in srgb, var(--brand-grad-b) 90%, transparent);
+                  border: 2px solid color-mix(in srgb, var(--hl-on-dark) 62%, transparent);
+                  box-shadow: 0 0 46px color-mix(in srgb, var(--hl-on-dark) 32%, transparent),
+                              0 26px 70px rgba(0,0,0,.45); }
+      .m-s-ico { width: 60px; height: 60px; flex: none; }
+      .m-s-ico circle, .m-s-ico path { fill: none; stroke: var(--hl-on-dark); stroke-width: 3.4;
+                  stroke-linecap: round; }
+      .m-s-q { flex: 1; min-width: 0; color: #fff; font-weight: 500; line-height: 1.25;
+               white-space: nowrap; overflow: hidden; }
+      .m-s-q.m-wrap { white-space: normal; }
+      .m-ch { display: none; }
+      .m-caret { display: inline-block; width: 3px; height: 1.0em; margin-inline-start: 5px;
+                 vertical-align: -0.12em; background: var(--hl-on-dark); }
