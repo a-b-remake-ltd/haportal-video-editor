@@ -349,6 +349,35 @@ def report_onsets(onsets, target, lo=0.015, hi=0.055, targets=None):
     return bad
 
 
+def keep_whole(src, out, cfg):
+    """An AI-avatar render (or a take that needs no cutting) keeps every frame. Render at
+    the source's native fps (25 for most avatar renders, 30 for phone footage) — resampling
+    to another rate is a needless re-time. Writes the same bounds.json the cutter writes,
+    with one segment, so every later step runs unchanged."""
+    fr = hfcfg.probe(src, "stream=r_frame_rate", "v:0") or "25/1"
+    n, d = (fr.split("/") + ["1"])[:2]
+    fps = round(float(n) / float(d or 1))
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    r = hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", src,
+                   "-vf", f"scale=1080:1920:flags=lanczos,fps={fps},setsar=1,setpts=N/({fps}*TB)",
+                   "-af", "asetpts=N/SR/TB", "-c:v", "libx264", "-crf", "14", "-preset", "medium",
+                   "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-ar", "48000", out])
+    if r.returncode:
+        sys.exit(f"copy failed:\n{r.stderr}")
+    frames = hfcfg.frames(out)
+    total = round(frames / fps, 4)
+    os.makedirs("src", exist_ok=True)
+    seg = {"name": "c01", "file": out, "src_start": 0.0, "src_end": total, "dur": total,
+           "frames": frames, "start": 0.0}
+    json.dump({"bounds": [0.0], "total": total, "segments": [seg], "fps": fps},
+              open("src/bounds.json", "w"), indent=1)
+    if fps != round(1 / FRAME):
+        print(f"  ! native fps is {fps}: set config project.fps = {fps} and FRAME = {1 / fps:.4f} "
+              f"in scripts/beats.py")
+    print(f"  {out}  {total:.3f}s at {fps} fps (kept whole) — src/bounds.json written")
+    return 0
+
+
 def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("--src", required=True, help="raw recording")
@@ -361,9 +390,15 @@ def main():
     ap.add_argument("--out", default="assets/aroll.mp4")
     ap.add_argument("--words", default="src/raw_words.json",
                     help="raw transcript words — finds chunks that open on a soft letter")
+    ap.add_argument("--whole", action="store_true",
+                    help="keep the take as it is (an AI avatar or a clean single take): copy it "
+                         "to the A-roll at its NATIVE fps and write a one-segment bounds.json")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
+
+    if a.whole:
+        return keep_whole(a.src, a.out, cfg)
 
     if a.plan or not a.chunks:
         isl, total = islands(a.src, a.noise)

@@ -477,6 +477,13 @@ def main():
             _write_wav(path, fn(), peak_db=-6.0)
             made += 1
         say(f"sfx     : {made} synthesised, {len(SFX)} total in assets/sfx (peak -6 dBFS)")
+        # The named cue set the kit, moments and outro use (soft_whoosh, swap_pop, ding,
+        # bars, snap, shatter, logo_sting…): synthesised stand-ins so every name resolves
+        # with no key and no credits. sfx.py library (with a key) upgrades them later.
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx.py"), "--dir", sdir,
+                            "library", "--synth"], capture_output=True, text=True)
+        say("sfx     : named cue set " + ("ready" if r.returncode == 0 else
+                                          "incomplete — run scripts/sfx.py library"))
 
     # --------------------------------------------------------------- flares
     if "flares" in groups:

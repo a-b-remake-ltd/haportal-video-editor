@@ -31,7 +31,7 @@ DEFAULTS = {
     # face for headlines and the outro.
     "brand": {"font_family": "Heebo", "display_family": "", "font_dir": "assets/fonts",
               "css": "brand/brand.css", "logo": "",
-              "accent": "#4fe6d8", "accent_alt": "#3d8bff", "accent_warm": "#D97757",
+              "accent": "#2F9BFF", "accent_alt": "#1E8BFF", "accent_warm": "#FF9ECF",
               "good": "#35e06b", "caption_size": 62,
               "caption_plate": "rgba(255,255,255,0.82)", "caption_ink": "#0a0a0a"},
     # Caption look (references/captions.md). The default is the premium motion-edit card:

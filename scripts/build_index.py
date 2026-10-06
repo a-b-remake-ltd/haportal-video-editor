@@ -233,6 +233,12 @@ class Tracks:
         return i
 
 
+def _rgb(h):
+    """'#2F9BFF' -> '47, 155, 255' for rgba(var(--x-rgb), a) in the CSS."""
+    h = str(h).lstrip("#")
+    return ", ".join(str(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+
+
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -535,12 +541,12 @@ def build(cfg, media, bounds, end):
       /* Brand tokens. Defaults = the house teal/blue look; brand/brand.css (generated
          from the logo) overrides them. Use the tokens, never a hard-coded hex, in any
          card or highlight you add. */
-      :root {{ --brand-primary: {b['accent']}; --brand-primary-rgb: 79, 230, 216;
-               --brand-secondary: {b['accent_alt']}; --brand-secondary-rgb: 61, 139, 255;
-               --brand-accent: {b['accent_warm']}; --brand-accent-rgb: 217, 119, 87;
+      :root {{ --brand-primary: {b['accent']}; --brand-primary-rgb: {_rgb(b['accent'])};
+               --brand-secondary: {b['accent_alt']}; --brand-secondary-rgb: {_rgb(b['accent_alt'])};
+               --brand-accent: {b['accent_warm']}; --brand-accent-rgb: {_rgb(b['accent_warm'])};
                --brand-ink: #0a0a0a; --brand-paper: #f7f5f0; --brand-on-primary: #0a0a0a;
-               --hl-on-dark: {b['accent']}; --hl-on-light: #0b6b66;
-               --brand-grad-a: #0e384e; --brand-grad-b: #03141e;
+               --hl-on-dark: {b['accent']}; --hl-on-light: #1B6FBE;
+               --brand-grad-a: #0B3E86; --brand-grad-b: #061224;
                --brand-font: "{b['font_family']}"; --display-font: "{display}"; }}
 {brand_css}
       html, body {{ margin: 0; width: {W}px; height: {H}px; overflow: hidden; background: #000; }}
