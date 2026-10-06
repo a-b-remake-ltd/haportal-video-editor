@@ -4,7 +4,7 @@
          above). No CSS transform on anything the timeline moves (lint:
          gsap_css_transform_conflict): hidden starting states are opacity:0. */
       .kt-scene { position: absolute; inset: 0; pointer-events: none; direction: $dir;
-        font-family: var(--brand-font, "Heebo"), "Heebo", "Inter", sans-serif; color: #fff; }
+        font-family: var(--brand-font), "Heebo", "Inter", sans-serif; color: #fff; }
       .kt-scene * { box-sizing: border-box; }
       .kt-ico { display: block; flex: none; }
       .kt-ltr { direction: ltr; unicode-bidi: isolate; }

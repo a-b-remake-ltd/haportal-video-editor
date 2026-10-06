@@ -42,6 +42,7 @@ import grid  # noqa: E402
 import kinetic  # noqa: E402
 import moments  # noqa: E402
 import outro  # noqa: E402
+import scenes  # noqa: E402
 
 beatmap, BEATS_PATH = hfcfg.load_beats()   # project copy wins over the skill's stub
 
@@ -50,6 +51,7 @@ OUTRO_PLAN = None      # set by build(); main() writes it to build/outro.json fo
 KINETIC_PLAN = None    # set by build(); main() prints its word-timing table
 CAPTION_HIDE = None    # set by build(); main() writes it to build/caption_hide.json
 MOMENTS_PLAN = None    # set by build(); main() writes build/moments.json
+SCENES_PLAN = None     # set by build(); main() writes build/scenes.json
 
 
 def merge_windows(windows, gap=FRAME):
@@ -220,7 +222,7 @@ class Tracks:
 
     def __init__(self):
         self.base = {"hook": 0, "matte": 4, "aroll": 5, "broll": 6, "graphics": 10,
-                     "kinetic": 14, "moments": 60, "msfx": 70,
+                     "kinetic": 14, "moments": 60, "msfx": 70, "scenes": 80, "ssfx": 90,
                      "music": 20, "sfx": 24, "flare": 30, "cap": 40,
                      "outro": 50, "osfx": 54}
         self.n = {k: 0 for k in self.base}
@@ -397,6 +399,26 @@ def build(cfg, media, bounds, end):
         hide.feed(mplan.get("hide_captions"), "moments")
         for t in mplan.get("transitions", []):
             warn_transition(cfg, t.get("id", "moment"), t.get("name"), emitted=True)
+
+    # ----------------------------------------------------------------- scenes
+    # Per-video designed moments (scripts/scenes.py loads the PROJECT's scenes.py and
+    # media.json "scenes", built on scripts/kit.py; method in references/storyboard.md).
+    # After the moments so a scene's camera move wins a same-frame tie; every scene is one
+    # clip on its own lane (base 80), its SFX on lanes 90+, its hidden-caption windows fed
+    # to the same CaptionHide as everything else.
+    global SCENES_PLAN
+    splan = SCENES_PLAN = scenes.plan(cfg, media, end, beatmap, bounds)
+    if splan:
+        for el in splan["elements"]:
+            body.append(clip(el["tag"], el["id"], el["cls"], el["start"], el["dur"], "scenes",
+                             el.get("extra", ""), el.get("inner", ""),
+                             track=tr.base["scenes"] + el["lane"]))
+        for sx in splan["sfx"]:
+            body.append(clip("audio", sx["id"], "sfx", sx["start"], sx["duration"], "ssfx",
+                             f' src="{sx["src"]}" data-volume="{sx["volume"]}"',
+                             track=tr.base["ssfx"] + sx["lane"]))
+        tl.extend(splan["js"])
+        hide.feed(splan["hide"], "scenes")
 
     # ----------------------------------------------------------------- flares
     for f in media.get("flares", []):
@@ -595,6 +617,7 @@ def build(cfg, media, bounds, end):
 {kplan["css"] if kplan else ""}
 {oplan["css"] if oplan else ""}
 {mplan["css"] if mplan else ""}
+{splan["css"] if splan else ""}
     </style>
   </head>
   <body>
@@ -675,6 +698,14 @@ def main():
                   open(mp, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     elif os.path.exists(mp):
         os.remove(mp)
+    sp = "build/scenes.json"     # the scene table + every SFX cue, for QA transition stills
+    if SCENES_PLAN:
+        json.dump({"scenes": SCENES_PLAN["table"], "hide_captions": SCENES_PLAN["hide"],
+                   "sfx": [{k: s[k] for k in ("id", "name", "start", "volume", "kind")}
+                           for s in SCENES_PLAN["sfx"]], "notes": SCENES_PLAN["notes"]},
+                  open(sp, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    elif os.path.exists(sp):
+        os.remove(sp)
     hw = CAPTION_HIDE.write("build/caption_hide.json")
     if hw:
         print(f"  captions hidden over {len(hw)} window(s) → build/caption_hide.json: "

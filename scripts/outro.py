@@ -1399,8 +1399,10 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
         js.append(f"      tl.fromTo(\"#og-d1, #og-d2\", {{ strokeDashoffset: 100 }}, "
                   f"{{ strokeDashoffset: 0, duration: 0.34, ease: \"power2.inOut\", "
                   f"immediateRender: false }}, {L(1.14)});")
-        # the traced centreline is an approximation: once drawn, show the WHOLE mark
-        js.append(f"      tl.set(\"#og-mfull\", {{ opacity: 1 }}, {L(1.48)});")
+        # the traced centreline is an approximation (and a mark may have pieces off it —
+        # KO's K beside its ring): once drawn, fade the WHOLE mark in, quickly
+        js.append(f"      tl.fromTo(\"#og-mfull\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.16, "
+                  f"ease: \"power1.out\", immediateRender: false }}, {L(1.36)});")
     else:
         js.append(f"      tl.fromTo(\"#og-mark\", {{ clipPath: \"inset(100% 0.01% 0.02% 0.03%)\" }}, "
                   f"{{ clipPath: \"inset(0.001% 0.01% 0.02% 0.03%)\", duration: 0.34, ease: \"power2.inOut\", "
@@ -1461,7 +1463,9 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
             "opening_screen": {"cx": r(ocx), "top": r(otop), "w": r(ow), "h": r(oh)},
             "logo_box": [round(lx), round(ly), round(lx + lw), round(ly + lh)],
             "grid_shift": r(dx), "tagline_top": r(tg_y) if words else None,
-            "voice_ref_lufs": voice_ref}
+            "voice_ref_lufs": voice_ref,
+            # also here so build/outro.json (written from info) carries them to sfx.py
+            "cues": cues}
     return {"style": "gate", "start": O, "end": E, "aroll_end": round(aroll_end, 3),
             "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
             "cues": cues,
@@ -1622,6 +1626,9 @@ PREVIEW_HTML = """<!doctype html>
       const tl = gsap.timeline({{ paused: true }});
       tl.set("#aroll", {{ scale: 1.02, y: 0 }}, 0);
 {js}
+      // init like build_index.py: outside the HyperFrames runtime (grid.py check, a
+      // plain browser) the registry does not exist and the page would never register
+      window.__timelines = window.__timelines || {{}};
       window.__timelines["main"] = tl;
     </script>
   </body>

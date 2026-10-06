@@ -23,9 +23,32 @@ Outputs in --out (the contract the build and the outro consume):
   logo_on_light.png ink silhouette, same alpha       (for paper scenes)
   palette.png       swatch sheet of the roles + contrast-checked text samples — LOOK at it
 
+  mark.png          the logo's SYMBOL alone (see "Mark" below)          — gate outro
+  word_left.png / word_right.png / word_below.png / word_above.png
+                    the rest of the logo split around the mark, each at its own box
+
 Holes: transparent (or white/background-filled) regions fully enclosed by the logo — the
 counter of an "O". The outro shrinks the speaker into a circle and lands it in the largest,
 roundest one. Coordinates are in logo_trim.png pixels.
+
+Mark: the logo is split into connected components on its alpha; the mark is the component
+that is unlike the letters — a colour most other components do not share, an OPENING (empty
+space inside its box reachable from one side only: an arch / gate open at the bottom), an
+enclosed hole (a ring), or plain size. Same-coloured pieces inside its box join it. Every
+other component is a word part, by where it sits. brand.json logo.mark (trimmed-logo px):
+  {x, y, w, h,                               mark.png's box
+   colour, how ("colour" | "shape" | "hole" | "only symbol"), score,
+   opening: {shape: "arch"|"hole"|"none", cx, top, w, h [, cy] [, side]},
+            arch: the space between the legs, top = inside of the arc, h runs to the
+            mark's bottom edge (the door's flat foot lands there); hole: the counter's box;
+            none: the mark's own box (a solid symbol — the door lands UNDER it)
+   parts: {left|right|below|above: {x, y, w, h} | null},
+   files: {mark, left, right, below, above},  paths of the PNGs above
+   fill: true when the logo paints a translucent light inside the opening (dropped from
+         mark.png so the door stays clear; the outro redraws it as its own light),
+   content: [x0, y0, x1, y1]                  the union of the parts (no empty margin)}
+No distinct mark (every component looks like a letter) → logo.mark is null; the gate outro
+is then unavailable and portal / line / impact work as before.
 """
 from __future__ import annotations
 
@@ -684,7 +707,12 @@ def find_mark(img: Img, knock: Optional[bytearray], holes: List[dict], notes: Li
         ho_r = ho["ratio"] if ho else 0.0
         hrel = (c["box"][3] - c["box"][1]) / float(hmed or 1)
         c["_uniq"], c["_op"], c["_ho"], c["_hrel"] = uniq, op_r, ho_r, hrel
+        # a usable opening or hole is worth a flat bonus: between two equally distinct
+        # symbols (a solid badge and a ring beside it) the one the door can fly INTO wins
+        usable = (op is not None and op["side"] == "bottom" and op_r >= MARK_MIN_OPENING) \
+            or ho_r >= MARK_MIN_HOLE
         c["_score"] = (1.2 * uniq + 1.2 * min(0.6, op_r) + 0.8 * min(0.5, ho_r)
+                       + (0.5 if usable else 0.0)
                        + 0.5 * math.sqrt(c["area"] / float(amax)) + 0.3 * min(1.5, hrel - 1))
     cands.sort(key=lambda c: -c["_score"])
     top = cands[0]
@@ -1196,7 +1224,10 @@ def main(argv=None) -> int:
     # ---- the mark (the symbol) and the words around it — for the gate outro
     mark, lab, comps, group = find_mark(trimmed, knock if has_fill else None, holes, notes)
     if mark:
-        rects, files, fill = export_mark_parts(trimmed, lab, comps, group, a.out)
+        # from the knocked-out image: a counter painted white is a hole for the door, and
+        # its white must not ride along as a fringe on mark.png
+        src_img = knocked_out(trimmed, knock) if has_fill else trimmed
+        rects, files, fill = export_mark_parts(src_img, lab, comps, group, a.out)
         mr = rects.pop("mark")
         # mark.png's own box (fringes included) is the placement rect
         mark.update({"x": mr["x"], "y": mr["y"], "w": mr["w"], "h": mr["h"]})

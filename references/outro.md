@@ -1,10 +1,16 @@
 # The animated logo outro ("סגיר")
 
-The signature close: when the speech ends, the speaker shrinks into a
-circle around the face, the circle flies into the logo and lands exactly in its hole, and
-the logo builds around it. `scripts/outro.py` rebuilds that choreography from any logo,
-using what `scripts/brand_from_logo.py` measured (`brand/brand.json`). Two alternatives
-exist for brands where it does not fit.
+The signature close: when the speech ends, **the video frame itself becomes part of the
+logo**. `scripts/outro.py` rebuilds that idea from any logo, using what
+`scripts/brand_from_logo.py` measured (`brand/brand.json`):
+
+- **`gate`** — the default when the logo has a **mark with an opening or a hole** (an arch,
+  a gate, a ring, the counter of an "O"): the footage closes into a door shaped like that
+  opening, flies into it, the mark draws itself around it, the speaker steps through into a
+  brand light, and the words slide out from behind the mark.
+- **`portal`** — the default otherwise: the speaker shrinks into a circle around the face
+  that flies into the logo (into its hole when it has one).
+- `line` and `impact` for brands where neither fits.
 
 **It is opt-in.** It runs only when there is a logo **and** the user said yes. A reel
 without a logo, or a user who did not ask for it, gets no outro, and a 16:9 piece never
@@ -18,13 +24,16 @@ In the opening conversation, only if a logo was supplied (or `brand/brand.json` 
 
 > יש לך לוגו? רוצה סגיר מונפש בסוף הסרטון?
 
-If yes, offer the three looks in one message, each in one line, and recommend `portal`:
+If yes, offer the looks in one message, each in one line. When `brand.json` has
+`logo.mark` with an `arch` or `hole` opening, offer `gate` first and recommend it;
+otherwise recommend `portal` (and leave `gate` out when there is no mark at all):
 
-> **פורטל** (מומלץ): הפריים שלך נסגר לעיגול סביב הפנים, עף לתוך הלוגו, והלוגו נבנה סביבו.
+> **שער** (מומלץ): הפריים שלך נסגר לדלת בצורת הסמל של הלוגו, עף לתוכו, ואותיות הלוגו יוצאות מאחוריו.
+> **פורטל**: הפריים שלך נסגר לעיגול סביב הפנים, עף לתוך הלוגו, והלוגו נבנה סביבו.
 > **קו**: קו דק בצבע המותג מעביר דף מימין לשמאל, הלוגו נחשף והסלוגן מוקלד אות אחר אות.
 > **אימפקט**: חיתוך חד לצבע המותג, הלוגו נוחת בעוצמה עם הבזק קטן. לסרטונים אנרגטיים.
 
-Then ask for the two lines under the logo:
+Then ask for the line(s) under the logo (`gate` shows the tagline only, word by word):
 
 > מה לכתוב מתחת ללוגו? משפט קצר (עד 40 תווים) ושם המשתמש שלך, למשל @name
 
@@ -40,7 +49,7 @@ No answer, or "no" → no outro. Write nothing to the config.
 `config.json` (the project default):
 
 ```json
-"outro": {"enabled": true, "style": "portal", "tagline": "…", "handle": "@name"}
+"outro": {"enabled": true, "style": "auto", "tagline": "…", "handle": "@name"}
 ```
 
 `media.json` may override per reel (it wins over the config): `"outro": true`,
@@ -48,14 +57,37 @@ No answer, or "no" → no outro. Write nothing to the config.
 
 | key | meaning | default |
 |---|---|---|
-| `style` | `portal`, `line` or `impact` | `portal` |
+| `style` | `gate`, `portal`, `line`, `impact`, or `auto` | `auto`: `gate` when the logo has a mark with an opening/hole, else `portal` |
 | `tagline` | one line under the logo, in the reel's language (RTL aware) | none |
 | `handle` | e.g. `@name`, always rendered LTR-isolated | none |
 | `start` | composition second the outro begins | A-roll end − 0.2 s |
-| `face` | `[x, y]` of the face in composition px, if the measurement is wrong | measured |
+| `face` | `[x, y]` of the face in composition px, if the measurement is wrong | `build/framing.json`, else measured |
 | `background` | `paper` or `dark` (portal/line; impact is always brand primary) | chosen by contrast |
-| `center_y` | vertical centre of the lockup | 860 |
+| `center_y` | vertical centre of the lockup (gate: of the logo; the tagline hangs below) | 860 |
 | `no_hole` | `true` forces the disc landing even when the logo has a hole | false |
+
+**The mark** (for `gate`). `brand_from_logo.py` splits the logo into connected components on
+its alpha and finds the mark — the component unlike the letters: a colour most components do
+not share, an **opening** (empty space inside its box reachable from ONE side only — an arch
+open at the bottom), an enclosed **hole**, or size; a usable opening/hole wins a tie; the
+best round hole (the old `holes` logic) is the fallback. It writes `logo.mark`
+(trimmed-logo px) and the split images:
+
+```json
+"mark": {"x": 167, "y": 23, "w": 174, "h": 206, "colour": "#368BD9", "how": "colour",
+         "opening": {"shape": "arch", "cx": 254.0, "top": 53, "w": 118, "h": 176, "side": "bottom"},
+         "parts": {"left": {"x": 0, "y": 63, "w": 150, "h": 223},
+                   "right": {"x": 374, "y": 0, "w": 414, "h": 228}, "below": null, "above": null},
+         "files": {"mark": "brand/mark.png", "left": "brand/word_left.png", "right": "brand/word_right.png"},
+         "fill": true, "content": [0, 0, 788, 286]}
+```
+
+`shape` is `arch` (the door flies into the doorway), `hole` (into the counter) or `none` (a
+solid symbol: the door lands under it). Every part PNG holds only its own pixels with its
+anti-aliased edge; a counter painted white is knocked out. `mark: null` = a plain wordmark,
+no gate. Tested shapes: an inline arch ("p∩rtal"), a stacked arch over Hebrew words, a solid
+app-icon beside a wordmark, a ring at the end of a word, a two-letter monogram whose O has a
+white-filled counter, a badge + ring pair.
 
 It needs `brand/brand.json` (path: `brand.json` in config, else next to `brand.css`) with a
 logo file. Without it the build stops and says so; it never draws a fake logo.
@@ -73,21 +105,88 @@ logo file. Without it the build stops and says so; it never draws a fake logo.
 Preview any style on its own before the full build:
 
 ```bash
-python3 scripts/outro.py preview --style portal --render     # → build/outro_preview/
+python3 scripts/outro.py preview --style gate --render       # → build/outro_preview/
+python3 scripts/outro.py preview --render                    # auto: gate or portal
 python3 scripts/outro.py plan                                # what the build will emit
 python3 scripts/outro.py face --aroll assets/aroll.mp4       # the measured face centre
 ```
 
 ---
 
-## 3. The three styles
+## 3. The styles
 
 All times are seconds after the outro start `O`. Everything sits inside the Reels grid:
 the lockup is centred on **x 500** (not 540) around **y ≈ 860**, inside the safe zone
 x 60-940 / y 220-1520 and inside the 3:4 profile crop. Text uses `var(--brand-font)` and
 the configured language direction.
 
-### `portal` — the signature (4.4 s)
+### `gate` — the frame becomes the logo (4.5 s)
+
+The idea, for any brand: **the video frame itself becomes part of the logo.** For a
+wordmark whose "o" is an arch (`p∩rtal`) the speaker's frame becomes the arch's doorway;
+for a ring it becomes the ring's centre; for a solid badge it lands under the badge.
+
+| t | what happens |
+|---|---|
+| 0.00 | **camera reset**: `#aroll, #ofreeze` (and `#cam` if a build has one) set to scale 1, x/y 0, rotation 0, `transform-origin` on the door centre — no punch-in, sway or panel offset leaks in. `#og-bg` (the last frame, `blur(46px) saturate(1.15)`, scale 1 → 1.3 over the whole outro, radial dim .35 → 1 from 0.7 over 1 s) fades in under the footage in 0.2 s. The freeze frame holds the picture from one frame before the A-roll ends |
+| 0.02 – 0.70 | the footage `clip-path` closes from the full frame into a **door around head and shoulders**, shaped like the mark's opening: `inset(T R B L round R R 0 0)` for an arch (R = half the door width), a circle for a hole, a rounded box for a solid mark. power3.inOut |
+| 0.25 | 7 soft light orbs fade and scale in around the door (stagger 0.03) |
+| 0.76 – 1.42 | the door flies into the opening (power3.inOut) with blur 0 → 14 → 0; from 0.82 the orbs are sucked into the opening's centre (stagger 0.035, power3.in) and vanish |
+| 1.14 – 1.48 | the mark draws itself: its own pixels (`mark.png`) revealed by a stroke mask drawn along its traced centreline — two halves rising from the base to the top (an arch's legs and arc; a ring's two sides). A solid mark wipes in bottom → top. From 1.36 the whole mark fades fully in |
+| 1.40 | a radial flash on lock; 1.42 the mark gets a drop-shadow glow (26 px, settling to 12 px) |
+| 1.50 – 2.10 | the words slide out **from behind the mark**: left part from x +(its width), right part from x −(its width), a part below drops out of the mark's base, each blur 10 → 0, 0.6 s expo.out, inside overflow-hidden wrappers that end at the mark's edge |
+| 1.58 – 2.08 | the speaker fades out inside the opening while a brand-light gradient fills it — he steps through |
+| 2.12 + 0.2·i | the tagline lands word by word (`word()`: faint grey blur → colour, 0.22 s); first word weight 700 white, the rest weight 300 in a light tint of `--hl-on-dark` |
+| 1.40 → end | the whole lockup pushes 1 → 1.045, pivoting on the opening |
+| end − 0.4 | fade to black |
+
+**Geometry** (all derived per video, never hand-placed):
+
+- The lockup: `logo.mark.content` (the union of mark and words, no empty margin) at equal
+  area (≤ 660 × 420; a stacked lockup may use 580 px of height), grown until the opening is
+  ≥ 84 px wide on screen, centred on the safe centre x 500, logo centre at `center_y`.
+- The landing rect: the opening on screen with a 4-5 % overscan on the sides and top, so
+  the door's edge slides under the mark's ink (arch: flush with the base).
+- The door: centred on the face (`outro.face` → `build/framing.json` → skin-mask
+  measurement), width 1.95 × face width clamped to 440-600 px, height = width ÷ the landing
+  rect's aspect — so it lands exactly.
+- The flight: with `transform-origin` o (the door centre), scale `s = landingWidth /
+  doorWidth`, and the door's top-centre p pinned to the landing's top-centre q:
+  `t = q − (o + (p − o)·s)`.
+- **Grid shift**: if the lockup pokes into the right rail (or past the left margin), the
+  lockup moves as one piece and the landing, the orbs' sink target and the words are all
+  derived after the shift (reported as `info.grid_shift`).
+- Words and mark on the dark background: a part keeps its colours when ≥ 85 % of it reads
+  on dark (≥ 60 % for the mark), else it becomes a white silhouette (a navy wordmark does).
+
+**Per-brand adaptation rule.** Keep the idea — the frame becomes part of the logo — and let
+the mark decide the shape: an arch/gate opening → an arched door that flies into the
+doorway; a ring or counter → a circular door into the hole; a solid symbol → a rounded door
+that lands under it and the symbol draws over it. Words beside the mark slide out sideways
+from behind it; words under a stacked mark drop out of its base. If `brand_from_logo.py`
+found no mark (every component looks like a letter — a plain wordmark), use `portal`.
+Override a wrong pick by editing `logo.mark` in brand.json only with a reason in the report.
+
+**Engineering rules this style obeys** (each one broke a render once):
+- every class/id is prefixed `og-` (a generic `.tw` once stacked the tagline words);
+- clip-path strings keep **every number distinct** on both ends (sub-pixel epsilons): the
+  browser normalises `inset(0px 0px 0px 0px round 0px …)` to `inset(0px)`, GSAP then sees a
+  different number count and jumps at the end instead of tweening — the door popped in
+  closed. The elliptical `a b c d / e f g h` radius form is avoided for the same reason;
+- orbs are a solid colour plus a box-shadow glow, not radial gradients (heavy-overlay rule);
+  their positions come from a fixed seed in Python, not `Math.random()`;
+- per-orb ids and tween times so no two tweens overlap on one property;
+- initial hidden states are CSS (`opacity: 0`, `stroke-dashoffset: 100`), never early sets.
+
+**Sound.** The plan carries cue dicts for the sound pipeline (`plan["cues"]`, and
+`info.cues` in `build/outro.json`): `{name, t, base_vol, exempt: true, stand_in}` —
+`soft_whoosh` at O+0.05, `portal_suck` at O+1.12, `logo_sting` at O+1.7 (base volumes .30 /
+.30 / .26, scaled to the voice by the sound step; exempt = deliberate beats, never slid off
+words). Until the sound step places them from its library, the outro's own synthesised
+stand-ins play (`osfx_page`, `osfx_rush`, `osfx_shimmer`, levelled as in §5); a sound step
+that places the cues drops the matching `stand_in` clips.
+
+### `portal` — the circle (4.4 s)
 
 | t | what happens |
 |---|---|
@@ -148,6 +247,7 @@ pop. Push 1 → 1.04, fade out.
 
 ### Background and logo variant
 
+- `gate`: always the blurred, darkened last frame (the footage's own world, gone dark).
 - `portal` / `line`: **paper** (`--brand-paper`, the bone look of the original) unless the
   logo's colours fail against it and pass against the dark gradient
   (`--brand-grad-a → --brand-grad-b`, a plain linear gradient: a radial glow bands
@@ -242,7 +342,13 @@ python3 scripts/grid.py overlay renders/proof.mp4 --at <O+1.3, O+2.6, end−0.5>
 Pull frames every 0.2 s from `O − 0.4` to the end of the **encoded** file and look at them:
 
 - [ ] no jump at the hand-off (`O`, A-roll end − 0.04, A-roll end): same framing, same colour
-- [ ] the circle surrounds the face (not the forehead or the chin); `face` overrides it
+- [ ] the circle / door surrounds the face (not the forehead or the chin); `face` overrides it
+- [ ] gate: the door CLOSES over ~0.7 s (it must not pop in — the clip-path epsilon rule),
+      is centred on the face, lands inside the opening with no background sliver at its
+      edges, the mark draws around it, the words come out of the mark's edge, the light
+      fills the doorway as the speaker fades
+- [ ] gate: `logo.mark` picked the symbol a designer would (look at `brand/mark.png` and the
+      `word_*.png` files before the build)
 - [ ] portal: the circle lands exactly in the hole — no background ring between face and ink
 - [ ] the logo is the real file, unclipped, inside the safe zone; nothing in a red zone
 - [ ] tagline reads in the right order (RTL for Hebrew), in the brand font, one line

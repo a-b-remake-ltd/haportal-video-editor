@@ -23,5 +23,6 @@
         background: radial-gradient(60% 55% at 50% 60%, rgba(255,255,255,.95), rgba(var(--eblue-rgb), .5) 60%, rgba(var(--eblue-rgb), 0)); }
       .kt-halo { position: absolute; border-radius: 50%; opacity: 0; mix-blend-mode: screen;
         background: radial-gradient(closest-side, rgba(var(--blue2-rgb), .55), rgba(var(--eblue-rgb), .18) 60%, rgba(var(--eblue-rgb), 0)); }
-      .kt-ringo { position: absolute; border-radius: 50%; opacity: 0; border: 5px solid var(--blue2);
-        box-shadow: 0 0 40px 8px rgba(var(--eblue-rgb), .55), inset 0 0 30px rgba(var(--blue2-rgb), .45); }
+      /* a soft light ring, not a drawn outline: thin edge, wide glow */
+      .kt-ringo { position: absolute; border-radius: 50%; opacity: 0; border: 3px solid rgba(var(--blue2-rgb), .7);
+        box-shadow: 0 0 60px 14px rgba(var(--eblue-rgb), .45), inset 0 0 50px 6px rgba(var(--blue2-rgb), .3); }

@@ -4,7 +4,28 @@
 Catches the mistake classes that actually come back as notes: dead space, frame drift,
 caption gaps and overlaps, two-line captions, missing spoken words, a card ending on a
 sticky word, an unprotected "AI", anything under the Reels UI (grid), a non-free font,
-low bitrate, audio clipping, wrong loudness, an HDR-tagged master.
+low bitrate, audio clipping, wrong loudness, an HDR-tagged master — and the motion-edit
+gates of references/qa.md:
+
+  captions    1-N words; a gap is fine only when it is a real pause (> 0.6 s, the card kept
+              its 0.3 s tail) or sits under a hidden window; NO visible card starts inside a
+              hidden window (build/caption_hide.json + the outro)
+  on-screen   no dashes (number ranges excepted; a prefix hyphen as in "ב-AI" is not a dash),
+              no emoji — in captions, headlines and every widget text in index.html
+  CSS         class-name collisions across scenes; heavy overlays (filter blur, radial
+              gradients, clip-paths: ≥ 40 elements renders black — counted in Chrome,
+              hidden ones included); every local asset the page loads exists
+  camera      any rotation / sway on the footage rides on a scale ≥ 1.07 (black corners)
+  render      freezedetect=n=0.002:d=0.6 and blackdetect=d=0.2:pix_th=0.05 report nothing;
+              loudness −14 ± 0.4 LUFS, true peak ≤ −1.0 dBTP (target ≈ −1.3)
+  intelligibility  the master's speech re-transcribed with the same engine + glossary,
+              compared word by word (≥ 97 %); every differing word listed with the SFX /
+              music events nearest to it, read from index.html
+  density     (warnings) a hook, 8-12 designed moments, 5-7 headlines, a callback when
+              storyboard.md declares one
+
+`--checklist` prints the spec's final checklist (references/qa.md) with ✓ / ✗ / ? per item,
+decided from these measurements; "?" = only a human look can decide it.
 
 A gate beats a rule. When a note repeats, add a check here rather than another line of
 prose — and run the negative test when you add one. A check you have never seen fail is
@@ -13,6 +34,7 @@ not a check.
 Usage
   python3 scripts/preflight_qa.py <project_dir> \
       [--aroll assets/aroll.mp4] [--transcript src/words.json] [--render renders/final.mp4]
+      [--checklist] [--no-intelligibility]
 """
 import glob
 import json
@@ -24,7 +46,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hfcfg  # noqa: E402
 
 FRAME = 0.04
-issues, ok = [], []
+issues, ok, warns = [], [], []
+M = {}          # measurements for --checklist: item -> (True | False | None, note)
+
+
+def mark(item, good, note=""):
+    """Record a checklist measurement. An item failing anywhere stays failed."""
+    prev = M.get(item)
+    if prev and prev[0] is False:
+        return
+    if prev and prev[0] is True and good is None:
+        return
+    M[item] = (good, note)
 
 
 def check_dead_space(aroll):
@@ -100,32 +133,87 @@ def _caption_rows(index_html, captions_json):
     return sorted(rows, key=lambda r: r["start"])
 
 
-def check_caption_continuity(index_html="index.html", captions_json="captions.json"):
+def _hide_windows():
+    import captions as capmod
+    return capmod.load_hide("build/caption_hide.json", "build/outro.json")
+
+
+def check_caption_continuity(cfg, index_html="index.html", captions_json="captions.json",
+                             transcript=None):
+    """Gaps are judged, not banned: the card is trimmed on purpose after a pause > 0.6 s, and
+    nothing shows under a hidden window. A blank while someone speaks, or a blink inside a
+    short pause, is still a failure (captions.gap_verdict, shared with captions.py)."""
+    import captions as capmod
     rows = _caption_rows(index_html, captions_json)
     if not rows:
         issues.append("NO CAPTIONS FOUND in the composition and no captions.json to fall back on")
+        mark(5, False, "no captions")
         return
-    gaps = ov = 0
-    for x, y in zip(rows, rows[1:]):
+    cc = cfg.get("captions", {})
+    maxw = int(cc.get("max_words", 3))
+    windows = _hide_windows()
+    full = json.load(open(captions_json, encoding="utf-8")) if os.path.exists(captions_json) else []
+    hidden_starts = {round(float(r["start"]), 3) for r in full if r.get("hidden")}
+    vis = [r for r in rows if round(r["start"], 3) not in hidden_starts]
+    words = [w for r in full for w in (r.get("words") or [])]
+    if not words and transcript and os.path.exists(transcript):
+        words = capmod.load_words(transcript)
+    gaps, ov = [], 0
+    for x, y in zip(vis, vis[1:]):
         e = x["start"] + x["dur"]
-        if y["start"] - e > 0.0055:
-            gaps += 1
         if e - y["start"] > 0.0055:
             ov += 1
+            continue
+        good, why = capmod.gap_verdict(e, y["start"], words, windows,
+                                       float(cc.get("pause_trim", 0.6)),
+                                       float(cc.get("pause_tail", 0.3)))
+        if not good:
+            gaps.append(why)
     if gaps:
-        issues.append(f"CAPTION GAP on {gaps} boundaries — blank frames with no caption")
+        issues.append(f"CAPTION GAP on {len(gaps)} boundaries (not a pause, not a hidden window): "
+                      + "; ".join(gaps[:4]))
     if ov:
-        issues.append(f"CAPTION OVERLAP on {ov} boundaries — two plates stacked for a frame")
+        issues.append(f"CAPTION OVERLAP on {ov} boundaries — two cards stacked for a frame")
     multi = [r for r in rows if r["text"].count("<br") or r["text"].count('class="l"') > 1]
     if multi:
         issues.append(f"{len(multi)} caption card(s) have TWO LINES — one line only, always")
     # tags removed WITHOUT a space: "ה-<span class=ltr>AI</span>" is one word, not two
-    words = [len(re.sub(r"<[^>]+>", "", r["text"]).split()) for r in rows]
-    fat = [n for n in words if n > 4]
+    nwords = [len(re.sub(r"<[^>]+>", "", r["text"]).split()) for r in rows]
+    fat = [n for n in nwords if n > maxw]
     if fat:
-        issues.append(f"{len(fat)} caption card(s) over 4 words (max seen: {max(words)})")
+        issues.append(f"{len(fat)} caption card(s) over {maxw} words (max seen: {max(nwords)})")
     if not (gaps or ov or multi or fat):
-        ok.append(f"captions: {len(rows)} cards, no gaps, no overlaps, single-line, ≤4 words")
+        ok.append(f"captions: {len(vis)} visible cards (+{len(rows) - len(vis)} hidden), "
+                  f"1-{maxw} words, single-line, no accidental gaps, no overlaps")
+    mark(5, not (gaps or ov or multi or fat),
+         f"{len(vis)} cards, max {max(nwords)} words" + (f", {len(gaps)} bad gaps" if gaps else ""))
+
+
+def check_caption_windows(captions_json="captions.json"):
+    """GATE: no visible caption STARTS inside a hidden window (the hook world, a headline —
+    the headline IS the caption there —, a moment that owns the frame, the outro)."""
+    import captions as capmod
+    if not os.path.exists(captions_json):
+        return
+    windows = _hide_windows()
+    rows = json.load(open(captions_json, encoding="utf-8"))
+    vis = [r for r in rows if not r.get("hidden")]
+    bad = [r for r in vis if capmod.inside(float(r["start"]), windows)]
+    cross = [r for r in vis if any(float(r["start"]) < a < float(r["start"]) + float(r["dur"]) - 0.011
+                                   for a, _ in windows)]
+    if bad:
+        issues.append("CAPTION STARTS INSIDE A HIDDEN WINDOW: " + "; ".join(
+            f"c{r['i']:02d} {float(r['start']):.2f}s '{r['plain']}'" for r in bad[:5])
+            + " — re-run captions.py after build_index.py")
+    elif cross:
+        warns.append(f"{len(cross)} caption card(s) run INTO a hidden window (captions.json is "
+                     f"stale; caption_layer.py trims them) — re-run captions.py")
+    else:
+        ok.append(f"captions vs {len(windows)} hidden window(s): none starts or runs inside one")
+    if not os.path.exists("build/caption_hide.json"):
+        warns.append("no build/caption_hide.json — captions are not hidden under headlines / "
+                     "hook / moments (run build_index.py, then captions.py)")
+    mark(5, not bad, f"{len(windows)} hidden windows")
 
 
 def check_words_covered(captions_json, transcript_json, typos=None):
@@ -208,6 +296,7 @@ def check_grid(cfg, index_html="index.html"):
                       "  — python3 scripts/grid.py check index.html")
     else:
         ok.append(f"grid ({g['name']}): {n} visible elements over {nt} times, all inside the safe zone")
+    mark(2, not found, f"grid: {len(found)} element(s) under the Reels UI")
 
 
 def check_fonts(cfg, index_html="index.html"):
@@ -226,6 +315,7 @@ def check_fonts(cfg, index_html="index.html"):
 
 
 def check_loudness(render, cfg):
+    """−14 ± 0.4 LUFS integrated, true peak ≤ −1.0 dBTP (the master targets ≈ −1.3)."""
     out = hfcfg.run(["ffmpeg", "-nostdin", "-i", render, "-af", "ebur128=peak=true",
                      "-f", "null", "-"]).stderr
     i = re.findall(r"I:\s+(-?[\d.]+) LUFS", out)
@@ -235,13 +325,19 @@ def check_loudness(render, cfg):
     lufs = float(i[-1])
     target = cfg["render"].get("target_lufs", -14.0)
     peak = float(tp[-1]) if tp else None
-    if abs(lufs - target) > 1.5:
-        issues.append(f"LOUDNESS {lufs:.1f} LUFS (target {target:.0f} ±1.5) — compress gently "
-                      f"before the limiter")
+    good = abs(lufs - target) <= 0.4
+    if not good:
+        issues.append(f"LOUDNESS {lufs:.1f} LUFS (target {target:.0f} ± 0.4) — adjust the "
+                      f"pre-limiter target in finish.py and re-master")
     else:
         ok.append(f"loudness: {lufs:.1f} LUFS" + (f", true peak {peak:.1f} dBTP" if peak is not None else ""))
     if peak is not None and peak > -1.0:
         issues.append(f"TRUE PEAK {peak:.1f} dBTP > -1 — it will clip after platform transcoding")
+        good = False
+    elif peak is not None and peak < -2.5:
+        warns.append(f"true peak {peak:.1f} dBTP — far under the ≈ −1.3 target (over-limited?)")
+    M["lufs"] = lufs
+    mark(11, good, f"{lufs:.1f} LUFS, TP {peak}")
 
 
 def check_render(render, cfg):
@@ -274,6 +370,548 @@ def check_render(render, cfg):
         ok.append("colour: SDR bt709")
 
 
+# ====================================================================== render scans
+def check_freeze_black(render):
+    """freezedetect=n=0.002:d=0.6 (nothing static > 0.6 s) and blackdetect=d=0.2:pix_th=0.05
+    (no black stretch: also catches the heavy-overlay capture failure that renders the first
+    half black). One decode pass for both."""
+    out = hfcfg.run(["ffmpeg", "-nostdin", "-i", render, "-map", "0:v:0", "-vf",
+                     "freezedetect=n=0.002:d=0.6,blackdetect=d=0.2:pix_th=0.05",
+                     "-f", "null", "-"]).stderr
+    fs = [float(x) for x in re.findall(r"freeze_start: ([\d.]+)", out)]
+    fd = [float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", out)]
+    fe = re.findall(r"freeze_end: ([\d.]+)", out)
+    bl = re.findall(r"black_start:([\d.]+) black_end:([\d.]+) black_duration:([\d.]+)", out)
+    if fs:
+        parts = []
+        for k, t in enumerate(fs):
+            d = fd[k] if k < len(fd) else None
+            parts.append(f"{t:.2f}s" + (f" ({d:.2f}s)" if d else " (to the end)"))
+        issues.append("FROZEN FRAMES (nothing changes for > 0.6 s): " + ", ".join(parts[:8])
+                      + " — add drift, an earlier entrance or a punch there")
+    else:
+        ok.append("freezedetect n=0.002 d=0.6: nothing static")
+    if bl:
+        issues.append("BLACK FRAMES: " + ", ".join(f"{float(a):.2f}-{float(b):.2f}s" for a, b, _ in bl[:6])
+                      + " — a heavy-overlay overload renders black; so does a missing asset")
+    else:
+        ok.append("blackdetect d=0.2 pix_th=0.05: no black stretch")
+    M["freezes"], M["black"] = len(fs), len(bl)
+    mark(4, None if not fs else False, f"{len(fs)} freeze(s)")
+    mark(11, not fs and not bl, f"{len(fs)} freeze(s), {len(bl)} black")
+
+
+def _audio_events(index_html="index.html"):
+    """[(start, dur, kind, id, src, volume)] for every <audio> clip in the composition."""
+    if not os.path.exists(index_html):
+        return []
+    html = open(index_html, encoding="utf-8").read()
+    ev = []
+    for tag in re.findall(r"<audio\b[^>]*>", html):
+        at = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+        if "data-start" not in at:
+            continue
+        src = at.get("src", "")
+        cls = at.get("class", "")
+        kind = "music" if ("music" in cls or "/music/" in src or "bed" in os.path.basename(src)) else "sfx"
+        ev.append((float(at["data-start"]), float(at.get("data-duration", 0) or 0), kind,
+                   at.get("id", ""), os.path.basename(src), at.get("data-volume", "")))
+    return sorted(ev)
+
+
+def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
+    """Re-transcribe the MASTER's speech part with the same engine and glossary, and compare
+    it word by word with src/words.json (SequenceMatcher on normalised words). An SFX on a
+    short word, or a music hit, swallows it: that shows up here as a changed word, with the
+    events nearest to it listed so you know what to move or duck.
+
+    words.json carries the INTENDED spelling (xcheck.py corrections), which the ear does not
+    hear; so the clean A-roll is transcribed the same way and the master is ALSO compared
+    with it. That second number isolates what the MIX changed, and it is the one gated when
+    it exists."""
+    import difflib
+    import html as _html
+    import captions as capmod
+    words = capmod.load_words(transcript)
+    if not words:
+        return
+    speech_end = round(max(w[1] for w in words) + 0.3, 2)
+    gl = ",".join(cfg["language"].get("glossary") or [])
+    here = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs("build/qa", exist_ok=True)
+
+    def run(src, tag):
+        out = f"build/qa/{tag}_words.json"
+        cmd = [sys.executable, os.path.join(here, "transcribe.py"), src, "--start", "0",
+               "--end", str(speech_end), "--out", f"build/qa/{tag}_transcript.json",
+               "--words", out, "--flags", ""]
+        if gl:
+            cmd += ["--glossary", gl]
+        r = hfcfg.run(cmd)
+        if r.returncode or not os.path.exists(out):
+            return None
+        return capmod.load_words(out)
+
+    tok = re.compile(r"[\w\u0590-\u05ff]+", re.UNICODE)
+
+    def toks(ws):
+        out = []
+        for s0, e0, w in ws:
+            for t in tok.findall(_html.unescape(str(w))):
+                out.append((t.lower(), s0))
+        return out
+
+    heard = run(render, "master")
+    if heard is None:
+        warns.append("intelligibility: could not transcribe the master (transcribe.py failed) — "
+                     "run it by hand")
+        mark(11, None, "intelligibility not measured")
+        return
+    ref, got = toks(words), toks(heard)
+
+    def score(a, b):
+        sm = difflib.SequenceMatcher(None, [x[0] for x in a], [x[0] for x in b], autojunk=False)
+        same = sum(bl.size for bl in sm.get_matching_blocks())
+        diffs = [(a[i1][1] if i1 < len(a) else (b[j1][1] if j1 < len(b) else 0.0),
+                  " ".join(x[0] for x in a[i1:i2]), " ".join(x[0] for x in b[j1:j2]))
+                 for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal"]
+        return same / max(1, len(a)), diffs
+
+    pct_w, diffs_w = score(ref, got)
+    base = run(aroll, "aroll") if aroll and os.path.exists(aroll) else None
+    pct, diffs, vs = pct_w, diffs_w, "src/words.json"
+    if base:
+        pct_c, diffs_c = score(toks(base), got)
+        pct, diffs, vs = pct_c, diffs_c, "the clean A-roll"
+    ev = _audio_events()
+    lines = []
+    for t, a_, b_ in diffs[:20]:
+        near = [e for e in ev if e[0] - 0.6 <= t <= e[0] + max(0.6, e[1] if e[2] == "sfx" else 0.6)]
+        near = sorted(near, key=lambda e: abs(e[0] - t))[:3]
+        tag = ", ".join(f"{e[2]} {e[3] or e[4]}@{e[0]:.2f}" for e in near) or "no SFX/music event near"
+        lines.append(f"[{t:6.2f}] '{a_ or '∅'}' → heard '{b_ or '∅'}'  ({tag})")
+    M["intelligibility"] = round(100 * pct, 1)
+    msg = (f"intelligibility: {100 * pct:.1f} % of the words match {vs}"
+           + (f" ({100 * pct_w:.1f} % vs words.json, which carries the corrected spellings)" if base else ""))
+    if pct < threshold:
+        issues.append(msg.upper().replace("INTELLIGIBILITY", "INTELLIGIBILITY BELOW 97 %", 1)
+                      + "\n      " + "\n      ".join(lines))
+    else:
+        ok.append(msg)
+        if lines:
+            warns.append("words heard differently in the master (check the SFX near each):\n      "
+                         + "\n      ".join(lines))
+    mark(11, pct >= threshold, f"{100 * pct:.1f} %")
+
+
+# ========================================================== the composition (index.html)
+class _Tree:
+    """Minimal DOM from html.parser: elements with id, classes, inline style, text, parent,
+    and the top-level timed SCENE each one lives in."""
+
+    def __init__(self, html):
+        from html.parser import HTMLParser
+        self.els, self.texts, self.styles = [], [], []
+        tree = self
+        VOID = {"img", "br", "hr", "input", "meta", "link", "source", "area", "col", "embed",
+                "param", "track", "wbr", "path", "circle", "rect", "line", "stop", "ellipse",
+                "polygon", "polyline", "use"}
+
+        class P(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.stack, self.skip = [], 0
+
+            def handle_starttag(self, tag, attrs):
+                at = dict(attrs)
+                parent = self.stack[-1] if self.stack else None
+                el = {"tag": tag, "id": at.get("id") or "", "cls": (at.get("class") or "").split(),
+                      "style": at.get("style") or "", "parent": parent, "timed": "data-start" in at,
+                      "attrs": at}
+                tree.els.append(el)
+                if tag in ("script", "style"):
+                    self.skip += 1
+                if tag not in VOID:
+                    self.stack.append(el)
+
+            def handle_startendtag(self, tag, attrs):
+                self.handle_starttag(tag, attrs)
+                if tag not in VOID and self.stack:
+                    self.stack.pop()
+
+            def handle_endtag(self, tag):
+                if tag in ("script", "style"):
+                    self.skip = max(0, self.skip - 1)
+                for k in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[k]["tag"] == tag:
+                        del self.stack[k:]
+                        break
+
+            def handle_data(self, data):
+                if self.stack and self.stack[-1]["tag"] == "style":
+                    tree.styles.append(data)
+                if self.skip or not data.strip():
+                    return
+                tree.texts.append((data.strip(), self.stack[-1] if self.stack else None))
+
+        P().feed(html)
+
+    def scene(self, el):
+        """The outermost timed ancestor below the root (or the element's own id)."""
+        top, n = None, el
+        while n is not None:
+            if n["timed"] and not n["attrs"].get("data-composition-id"):
+                top = n
+            n = n["parent"]
+        return (top["id"] or top["tag"]) if top else "(static)"
+
+
+def _css_rules(css):
+    """[(selector, {prop: value}, block_index)] from a stylesheet (no @media nesting)."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    css = re.sub(r"@font-face\s*{[^}]*}", "", css)
+    out = []
+    for k, m in enumerate(re.finditer(r"([^{}@]+){([^{}]*)}", css)):
+        decl = {}
+        for d in m.group(2).split(";"):
+            if ":" in d:
+                a, b = d.split(":", 1)
+                decl[a.strip().lower()] = b.strip()
+        for sel in m.group(1).split(","):
+            sel = sel.strip()
+            if sel:
+                out.append((sel, decl, k))
+    return out
+
+
+def _page_css(html, tree):
+    css = "\n".join(tree.styles)
+    for href in re.findall(r'<link[^>]+href="([^"]+\.css)"', html):
+        if not re.match(r"^[a-z]+:", href) and os.path.exists(href):
+            css += "\n" + open(href, encoding="utf-8").read()
+    return css
+
+
+LAYOUT = ("position", "left", "top", "right", "bottom", "inset", "width", "height",
+          "transform", "display")
+
+
+def check_class_collisions(index_html="index.html"):
+    """Two scenes that use the same class name for different things. The real failure: a
+    particle class `.tw {position:absolute; ...}` and the outro tagline's `.tw` — the
+    particle rule also applied to the tagline words and stacked them on top of each other.
+    Flagged:
+      (a) the same bare class rule `.x {...}` written twice with a conflicting value
+      (b) a bare class rule that POSITIONS (position:absolute/fixed or left/top) used in
+          two or more scenes, where one of them also styles it under a scope (`#tag .x`):
+          the bare rule leaks into the scoped one
+    Fix: prefix scene-specific classes (`.ot-word`, `.m3-dot`)."""
+    if not os.path.exists(index_html):
+        return
+    html = open(index_html, encoding="utf-8").read()
+    tree = _Tree(html)
+    rules = _css_rules(_page_css(html, tree))
+    bare = {}
+    for sel, decl, k in rules:
+        m = re.fullmatch(r"\.([\w-]+)", sel)
+        if m:
+            bare.setdefault(m.group(1), []).append((decl, k))
+    scoped = {}
+    for sel, decl, k in rules:
+        parts = sel.split()
+        if len(parts) >= 2:
+            m = re.fullmatch(r"(?:[\w-]*)\.([\w-]+)(?:[.:#\[].*)?", parts[-1].lstrip(">+~"))
+            if m:
+                scoped.setdefault(m.group(1), []).append(sel)
+    scenes = {}
+    for el in tree.els:
+        for c in el["cls"]:
+            scenes.setdefault(c, set()).add(tree.scene(el))
+    found = []
+    for c, defs in bare.items():
+        if len(defs) > 1:
+            conflict = []
+            for (d1, _), (d2, _) in zip(defs, defs[1:]):
+                conflict += [p for p in d1 if p in d2 and d1[p] != d2[p]]
+            if conflict:
+                found.append(f".{c} is defined {len(defs)} times with different "
+                             f"{', '.join(sorted(set(conflict))[:3])}")
+        positions = any(d.get("position") in ("absolute", "fixed") or "left" in d or "top" in d
+                        for d, _ in defs)
+        sc = scenes.get(c, set())
+        if positions and len(sc) >= 2 and scoped.get(c):
+            found.append(f".{c} positions elements (bare rule) in {len(sc)} scenes "
+                         f"({', '.join(sorted(sc)[:3])}) and is also styled as "
+                         f"'{scoped[c][0]}' — the bare rule leaks into it")
+    if found:
+        issues.append("CSS CLASS COLLISION across scenes (prefix scene classes): " + " | ".join(found[:4]))
+    else:
+        ok.append(f"CSS: no class collisions across scenes ({len(bare)} bare class rules checked)")
+    mark(9, not found, f"{len(found)} collision(s)")
+
+
+HEAVY_PROBE = r"""
+<script>
+window.addEventListener('load', () => setTimeout(() => {
+  const out = []; const root = document.getElementById('root') || document.body;
+  for (const el of root.querySelectorAll('*')) {
+    const cs = getComputedStyle(el); const why = [];
+    if (/blur\(/.test(cs.filter)) why.push('filter blur');
+    if (/blur\(/.test(cs.backdropFilter || cs.webkitBackdropFilter || '')) why.push('backdrop blur');
+    if (/radial-gradient/.test(cs.backgroundImage)) why.push('radial-gradient');
+    if (cs.clipPath && cs.clipPath !== 'none') why.push('clip-path');
+    if (why.length) out.push({id: el.id, cls: (el.getAttribute('class') || '').slice(0, 30), why});
+  }
+  document.getElementById('__heavy').textContent = JSON.stringify(out);
+}, 200));
+</script><div id="__heavy"></div>
+"""
+
+
+def check_heavy_overlays(index_html="index.html", limit=40):
+    """Fewer than ~40 elements may carry filter:blur, a radial gradient or a clip-path, HIDDEN
+    ONES INCLUDED — above that the frame capture renders solid black for the first half of
+    the video. Counted on the computed style in Chrome (CSS + inline), before any seek."""
+    if not os.path.exists(index_html):
+        return
+    import subprocess
+    html = open(index_html, encoding="utf-8").read()
+    page = html.replace("</body>", HEAVY_PROBE + "</body>") if "</body>" in html else html + HEAVY_PROBE
+    tmp = os.path.join(os.path.dirname(os.path.abspath(index_html)), "_heavyprobe.html")
+    open(tmp, "w", encoding="utf-8").write(page)
+    try:
+        r = subprocess.run([hfcfg.chrome_path(), "--headless", "--disable-gpu", "--no-sandbox",
+                            "--allow-file-access-from-files", "--window-size=1080,1920",
+                            "--virtual-time-budget=4000", "--dump-dom", "file://" + tmp],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:                                      # noqa: BLE001
+        warns.append(f"heavy-overlay count could not run Chrome: {e}")
+        return
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    import html as _h
+    m = re.search(r'id="__heavy">(.*?)</div>', r.stdout, re.S)
+    if not m:
+        warns.append("heavy-overlay count: Chrome returned nothing")
+        return
+    rows = json.loads(_h.unescape(m.group(1)) or "[]")
+    n = len(rows)
+    kinds = {}
+    for x in rows:
+        for w in x["why"]:
+            kinds[w] = kinds.get(w, 0) + 1
+    detail = ", ".join(f"{v} {k}" for k, v in sorted(kinds.items()))
+    if n >= limit:
+        issues.append(f"HEAVY OVERLAYS: {n} elements ({detail}) — keep < {limit}; above it the "
+                      f"capture renders black. Particles: solid colour + box-shadow glow")
+    elif n >= limit * 0.8:
+        warns.append(f"heavy overlays: {n} elements ({detail}) — close to the {limit} limit")
+    else:
+        ok.append(f"heavy overlays: {n} elements" + (f" ({detail})" if detail else "") + f" < {limit}")
+    M["heavy"] = n
+    mark(10, n < limit, f"{n} heavy elements")
+
+
+def check_assets(index_html="index.html"):
+    """Every LOCAL file the page loads exists — the renderer silently skips a missing image
+    (and HyperFrames' lint calls missing_local_asset fatal)."""
+    if not os.path.exists(index_html):
+        return
+    html = open(index_html, encoding="utf-8").read()
+    refs = set(re.findall(r'\b(?:src|href)="([^"#?]+)"', html))
+    refs |= set(re.findall(r"url\(\s*['\"]?([^'\")#?]+)['\"]?\s*\)", html))
+    from urllib.parse import unquote
+    missing = sorted(r for r in refs if not re.match(r"^(?:[a-z]+:|//)", r) and r.strip()
+                     and not os.path.exists(unquote(r)))
+    if missing:
+        issues.append(f"MISSING LOCAL ASSET(S): {missing[:6]}")
+    else:
+        ok.append(f"assets: all {len(refs)} local references exist")
+    mark(10, not missing, f"{len(missing)} missing asset(s)")
+
+
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\U00002600-\U000026FF\U0001F1E6-\U0001F1FF"
+                   "\u2700-\u2712\u2714-\u2716\u2719-\u27BF\uFE0F\u200D\u2B50\u2B55\u231A\u231B"
+                   "\u23E9-\u23F3\u23F8-\u23FA]")
+DASH = re.compile(r"[\u2012-\u2015\u2E3A\u2E3B]|(?<![\w\u0590-\u05ff])-|-(?![\w\u0590-\u05ff])")
+RANGE = re.compile(r"\d\s*[-\u2012-\u2015]\s*\d")
+
+
+def on_screen_problems(text):
+    """(dash?, emoji?) for one on-screen string. A number range ("10-20") is the one dash
+    allowed; a hyphen glued between letters ("ב-AI", "e-mail") is orthography, not a dash.
+    ✓ / ✗ are type, not keyboard emoji."""
+    t = RANGE.sub("0", text)
+    return bool(DASH.search(t)), bool(EMOJI.search(text))
+
+
+def check_on_screen_text(index_html="index.html", captions_json="captions.json"):
+    if not os.path.exists(index_html) and not os.path.exists(captions_json):
+        return
+    import html as _h
+    items = []
+    if os.path.exists(captions_json):
+        for r in json.load(open(captions_json, encoding="utf-8")):
+            if not r.get("hidden"):
+                items.append((f"caption c{r['i']:02d}", re.sub(r"<[^>]+>", "", _h.unescape(r["text"]))))
+    if os.path.exists(index_html):
+        tree = _Tree(open(index_html, encoding="utf-8").read())
+        for text, el in tree.texts:
+            if el is not None and el["tag"] in ("title",):
+                continue
+            who = f"#{el['id']}" if el and el["id"] else (f".{el['cls'][0]}" if el and el["cls"] else "text")
+            items.append((who, text))
+    dashes = [f"{w} '{t[:30]}'" for w, t in items if on_screen_problems(t)[0]]
+    emo = [f"{w} '{t[:30]}'" for w, t in items if on_screen_problems(t)[1]]
+    if dashes:
+        issues.append(f"DASH IN ON-SCREEN TEXT ({len(dashes)}): " + "; ".join(dashes[:5])
+                      + " — rewrite without it (only number ranges may keep one)")
+    if emo:
+        issues.append(f"EMOJI IN ON-SCREEN TEXT ({len(emo)}): " + "; ".join(emo[:5]))
+    if not dashes and not emo:
+        ok.append(f"on-screen text: {len(items)} strings, no dashes, no emoji")
+    mark(5, not dashes and not emo, f"{len(dashes)} dash, {len(emo)} emoji")
+
+
+def check_rotation_scale(index_html="index.html", footage=("#aroll", "#cam")):
+    """Rotation / sway on the footage MUST ride on a scale ≥ 1.07, or the rotated frame shows
+    black corners. Reads the timeline: every tween or set that rotates a footage selector is
+    checked against the scale that footage has at that time (the latest scale set / tween
+    end before it, or its own scale)."""
+    if not os.path.exists(index_html):
+        return
+    js = "\n".join(re.findall(r"<script>(.*?)</script>", open(index_html, encoding="utf-8").read(), re.S))
+    sel_re = "|".join(re.escape(f) for f in footage)
+    calls = []
+    for m in re.finditer(r"tl\.(set|to|fromTo|from)\(\s*['\"](" + sel_re + r")['\"]\s*,(.*?)\)\s*;", js, re.S):
+        kind, sel, body = m.group(1), m.group(2), m.group(3)
+        tm = re.search(r",\s*([\d.]+)\s*$", body.strip())
+        t = float(tm.group(1)) if tm else None
+        objs = re.findall(r"{([^{}]*)}", body)
+        last = objs[-1] if objs else ""
+        sc = re.search(r"\bscale\s*:\s*([\d.]+)", last)
+        rot = [float(x) for x in re.findall(r"\brotation\s*:\s*(-?[\d.]+)", body)]
+        calls.append({"t": t, "sel": sel, "scale": float(sc.group(1)) if sc else None,
+                      "rot": max((abs(r) for r in rot), default=0.0)})
+    bad = []
+    for c in calls:
+        if c["rot"] <= 0.01 or c["t"] is None:
+            continue
+        cur = c["scale"]
+        if cur is None:
+            prev = [x for x in calls if x["sel"] == c["sel"] and x["scale"] is not None
+                    and x["t"] is not None and x["t"] <= c["t"] + 1e-6]
+            cur = prev[-1]["scale"] if prev else 1.0
+        if cur < 1.07 - 1e-6:
+            bad.append(f"{c['sel']} rotates {c['rot']:g}° at {c['t']:.2f}s on scale {cur:g}")
+    if bad:
+        issues.append("ROTATION WITHOUT A PUNCH (black corners; needs scale ≥ 1.07): "
+                      + "; ".join(bad[:4]))
+    else:
+        n = sum(1 for c in calls if c["rot"] > 0.01)
+        ok.append(f"camera: {n} rotation(s) on the footage, all on scale ≥ 1.07")
+    mark(6, not bad, f"{len(bad)} rotation(s) under 1.07")
+
+
+def check_density(media_json="media.json", storyboard="storyboard.md"):
+    """The premium-edit density targets — WARNINGS, the story decides in the end."""
+    if not os.path.exists(media_json):
+        return
+    m = json.load(open(media_json, encoding="utf-8"))
+    moms = [x for x in m.get("moments", []) if x.get("type") != "punch"]
+    scenes = m.get("scenes", []) or []
+    designed = len(moms) + len(scenes)
+    heads = len(m.get("headlines", []) or [])
+    hook = bool(m.get("hook")) or any(x.get("type") == "fly" and float(x.get("start", 99)) < 2.0
+                                      for x in moms) \
+        or any("hook" in str(x.get("type", "")) + str(x.get("id", "")) for x in scenes)
+    punch = any(x.get("type") == "punch" for x in m.get("moments", []))
+    w = []
+    if not hook:
+        w.append("no hook (the frame flying into a designed world in the first ~1 s)")
+    if not 8 <= designed <= 12:
+        w.append(f"{designed} designed moment(s) — target 8-12")
+    if not 5 <= heads <= 7:
+        w.append(f"{heads} kinetic headline(s) — target 5-7")
+    if not punch:
+        w.append("no punch-ins (scripts/plan_punches.py)")
+    cb_declared = os.path.exists(storyboard) and re.search(r"callback|קולבק|תשלום חוזר",
+                                                           open(storyboard, encoding="utf-8").read(), re.I)
+    cb = any(x.get("callback") or "callback" in str(x.get("id", "")) for x in moms + scenes)
+    if cb_declared and not cb:
+        w.append("storyboard.md declares a callback but no moment/scene is marked \"callback\"")
+    for x in w:
+        warns.append("density: " + x)
+    if not w:
+        ok.append(f"density: hook, {designed} moments, {heads} headlines, punch-ins")
+    M.update(hook=hook, designed=designed, heads=heads, punch=punch, callback=cb or not cb_declared)
+    mark(3, True if hook else None, "hook" if hook else "no hook")
+    mark(4, None if w else True, f"{designed} moments, {heads} headlines")
+    mark(6, True if punch else None, "punch moment present" if punch else "no punches")
+
+
+CHECKLIST = [
+    (1, "Two-model transcription diffed; caption text corrected to the intended script; changes listed"),
+    (2, "Framing map written; every element inside the grid's safe zone; captions on a high-contrast band"),
+    (3, "Hook: words, frame flies away, 2-3 literal cards, return through the tint, speaker away ≤5s"),
+    (4, "8-12 literal designed moments, 5-7 word-by-word headlines, at least 1 callback, nothing static >0.6s"),
+    (5, "Captions 1-3 words, hard swaps, hidden under headlines, hook and outro; no dashes; no emoji"),
+    (6, "Punch-ins on phrase boundaries; rotation only with scale ≥1.07"),
+    (7, "Music generated, 2 variants compared, drop aligned to the turn by offset, sections calibrated, relative drops, outro lift"),
+    (8, "SFX on every transition, scaled to the voice, never on words (except marked impacts)"),
+    (9, "Outro geometry recomputed for this framing; logo inside the grid; no class collisions"),
+    (10, "Lint 0 errors; no heavy-overlay overload; all assets present"),
+    (11, "Snapshots reviewed and clean; master at −14 LUFS; no freezes; no black; transcript match ≥97%"),
+    (12, "Report with location, beats, music, QA numbers, deviations"),
+]
+
+
+def checklist_files(transcript=None):
+    """Checklist items decided from files rather than from a scan."""
+    if os.path.exists("src/xcheck.json"):
+        x = json.load(open("src/xcheck.json", encoding="utf-8"))
+        good = x.get("undecided", 1) == 0 and not x.get("unmatched_keys")
+        mark(1, good, f"{len(x.get('disagreements', []))} disagreements, {x.get('undecided')} undecided, "
+                      f"{len(x.get('changes', []))} correction(s) applied")
+    else:
+        mark(1, False, "no src/xcheck.json — run scripts/xcheck.py")
+    if os.path.exists("build/framing.json"):
+        f = json.load(open("build/framing.json", encoding="utf-8"))
+        lu = f.get("caption_band_luma")
+        mark(2, None if lu is None else lu <= 0.6,
+             f"caption band {f.get('caption_band')} luma {lu}")
+    else:
+        mark(2, False, "no build/framing.json — run scripts/framing_map.py")
+    if os.path.exists("media.json"):
+        m = json.load(open("media.json", encoding="utf-8"))
+        music = (m.get("audio") or {}).get("music") or []
+        mark(7, None if music else False, f"{len(music)} music clip(s) — variants/drop: by hand")
+        sfx = [e for e in _audio_events() if e[2] == "sfx"]
+        on_word = []
+        if transcript and os.path.exists(transcript):
+            import captions as capmod
+            ws = capmod.load_words(transcript)
+            on_word = [e for e in sfx if any(w[0] - 0.04 <= e[0] < w[1] - 0.02 for w in ws)]
+        mark(8, None if sfx else False,
+             f"{len(sfx)} SFX, {len(on_word)} starting inside a word (exempt impacts allowed)")
+    mark(9, None if os.path.exists("build/outro.json") else None,
+         "outro planned" if os.path.exists("build/outro.json") else "no outro planned")
+    if glob.glob("build/qa/*.png"):
+        mark(11, None, "contact sheets exist in build/qa — look at every frame")
+    mark(12, None, "written by hand")
+
+
+def print_checklist():
+    print("\n== FINAL CHECKLIST (references/qa.md) ==")
+    for n, text in CHECKLIST:
+        good, note = M.get(n, (None, "not measured"))
+        sym = "✓" if good is True else ("✗" if good is False else "?")
+        print(f"  {sym} {n:2d}. {text}\n         {note}")
+
+
 def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("project", nargs="?", default=".")
@@ -282,15 +920,28 @@ def main():
     ap.add_argument("--render")
     ap.add_argument("--captions", default="captions.json")
     ap.add_argument("--html", default="index.html")
+    ap.add_argument("--checklist", action="store_true", help="print the final checklist")
+    ap.add_argument("--no-intelligibility", action="store_true",
+                    help="skip re-transcribing the master (it takes ~30 s per minute)")
+    ap.add_argument("--no-chrome", action="store_true", help="skip the Chrome-based checks")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
     os.chdir(a.project)
+    transcript = a.transcript or ("src/words.json" if os.path.exists("src/words.json") else None)
 
     check_drift()
-    check_caption_continuity(a.html, a.captions)
+    check_caption_continuity(cfg, a.html, a.captions, transcript)
+    check_caption_windows(a.captions)
     check_caption_language(cfg, a.captions)
-    check_grid(cfg, a.html)
+    check_on_screen_text(a.html, a.captions)
+    check_class_collisions(a.html)
+    check_assets(a.html)
+    check_rotation_scale(a.html)
+    check_density()
+    if not a.no_chrome:
+        check_grid(cfg, a.html)
+        check_heavy_overlays(a.html)
     check_fonts(cfg, a.html)
     if a.transcript:
         check_words_covered(a.captions, a.transcript, cfg["language"].get("typos"))
@@ -299,14 +950,24 @@ def main():
     if a.render:
         check_render(a.render, cfg)
         check_loudness(a.render, cfg)
+        check_freeze_black(a.render)
+        if transcript and not a.no_intelligibility:
+            check_intelligibility(cfg, a.render, transcript, a.aroll or
+                                  ("assets/aroll.mp4" if os.path.exists("assets/aroll.mp4") else None))
 
     print("== PREFLIGHT QA ==")
     for o in ok:
         print(f"  ✓ {o}")
+    for w in warns:
+        print(f"  ! {w}")
     for i in issues:
         print(f"  ✗ {i}")
+    if a.checklist:
+        checklist_files(transcript)
+        print_checklist()
     if not issues:
-        print("\n  clean — now walk references/checklist.md before you show it to anyone")
+        print("\n  clean — now look at the contact sheets (scripts/qa_frames.py) and walk "
+              "references/qa.md before you show it to anyone")
     return 1 if issues else 0
 
 

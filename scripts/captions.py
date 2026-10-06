@@ -420,10 +420,14 @@ def gap_verdict(prev_end, nxt_start, all_words, windows, pause_trim=0.6, pause_t
     for u0, u1 in parts:
         if u1 - u0 <= FRAME + 1e-6:
             continue
-        spoken = [w for w in all_words if w[0] < u1 - FRAME and w[1] > u0 + FRAME]
+        # a word counts as spoken in the blank only by more than 0.08 s: the tail of a word
+        # the headline just showed, or the breath-onset of the next, is not a missing caption
+        spoken = [w for w in all_words if min(w[1], u1) - max(w[0], u0) > 0.08]
         if spoken:
             return False, (f"{u0:.2f}-{u1:.2f}s blank while '{spoken[0][2]}' is spoken "
                            f"({spoken[0][0]:.2f}s)")
+        if any(abs(u0 - b) <= FRAME + 1e-6 or abs(u1 - a) <= FRAME + 1e-6 for a, b in windows):
+            continue        # silence next to a headline / hidden window: the card waits for its word
         before = max((w[1] for w in all_words if w[1] <= u0 + FRAME), default=None)
         after = min([w[0] for w in all_words if w[0] >= u1 - FRAME], default=None)
         if before is not None and after is not None and after - before <= pause_trim + 1e-6:

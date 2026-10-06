@@ -138,7 +138,9 @@ def plan_region(r0, r1, cands, keys, gmin, gmax, kmin=1.0):
     used_keys = set()
     while True:
         nk = next(((t, k) for t, k in keys if t >= t_last + kmin and (t, k) not in used_keys), None)
-        if nk and nk[0] - t_last <= gmax:
+        # a key word punches from WIDE: when the camera is wide and the key word is near,
+        # hold wide until it (1.10 → 1.12 is invisible; 1.0 → 1.12 is a cut)
+        if nk and (nk[0] - t_last <= gmax or (cur == 1.0 and nk[0] - t_last <= gmax + 1.0)):
             t, k = nk
             used_keys.add(nk)
             if cur != 1.0:
@@ -153,9 +155,11 @@ def plan_region(r0, r1, cands, keys, gmin, gmax, kmin=1.0):
             t_last, cur = t, f
             continue
         lo, hi = t_last + gmin, t_last + gmax
-        pool = [c for c in cands if lo <= c <= hi and (not nk or c <= nk[0] - kmin)]
+        # leave room to come back to wide before the next key word
+        room = (gmin + kmin) if cur == 1.0 else kmin
+        pool = [c for c in cands if lo <= c <= hi and (not nk or c <= nk[0] - room)]
         if not pool:
-            pool = [c for c in cands if c > hi and (not nk or c <= nk[0] - kmin)][:1]
+            pool = [c for c in cands if c > hi and (not nk or c <= nk[0] - room)][:1]
         if not pool:
             if nk:                          # nothing fits before the key word: jump to it
                 t_last = max(t_last, nk[0] - gmax)

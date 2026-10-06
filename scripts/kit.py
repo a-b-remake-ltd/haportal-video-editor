@@ -583,18 +583,18 @@ def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None
     style = f' style="top:{r3(top)}px"' if top is not None else ""
     t_in = s.start if t_in is None else s.at(t_in)
     if enter == "drop":
-        s.drop(wid, t_in, 0.55)
+        s.drop("#" + wid, t_in, 0.55)
     elif enter == "slide":
-        s.slide(wid, t_in, 300, 0.4)
+        s.slide("#" + wid, t_in, 300, 0.4)
     elif enter == "pop":
-        s.pop(wid, t_in, 0.45)
+        s.pop("#" + wid, t_in, 0.45)
     elif enter == "none":
-        s.set(wid, {"opacity": 1}, t_in)
+        s.set("#" + wid, {"opacity": 1}, t_in)
     else:
         raise KitError(f"kit: widget enter {enter!r} — drop | slide | pop | none")
     if t_out is not False:
         t_out = r3(s.end - 0.3) if t_out is None else s.at(t_out)
-        s.away(wid, t_out)
+        s.away("#" + wid, t_out)
     if sfx:
         s.sfx(sfx, t_in, "normal", sfx_vol)
     return Html(f'<div class="kt-wid kt-glass {cls}" id="{wid}"{style}>{head}{body}</div>')
@@ -754,7 +754,7 @@ def week(s, hit=4, t0=None, step=0.13, pulse_t=None, days=None, name="d"):
         if i <= hit:
             s.set(f"#{did}l", {"opacity": 1}, r3(t0 + step * i))
     pt = s.at(pulse_t) if pulse_t is not None else r3(t0 + step * hit + 0.1)
-    s.pulse(s.uid(f"{name}{hit}"), pt, 1.2, 0.25)
+    s.pulse("#" + s.uid(f"{name}{hit}"), pt, 1.2, 0.25)
     return Html(f'<div class="kt-days">{"".join(out)}</div>')
 
 
@@ -1415,14 +1415,14 @@ def glow_ring(s, t, d=None, cx=None, cy=None, r=None, name="gl"):
     fr = ctx.framing
     cx = fr["face_cx"] if cx is None else cx
     cy = (fr["face_cy"] + 70) if cy is None else cy
-    r = 330 if r is None else r
+    r = 360 if r is None else r
     t = s.at(t)
     d = (s.end - t) if d is None else d
     hid, rid = s.uid(name + "h"), s.uid(name + "r")
     s.tween("#" + hid, {"opacity": 0, "scale": 0.6}, {"opacity": 1, "scale": 1.1}, t, 0.6, "power2.out")
     s.tween("#" + hid, {"opacity": 1}, {"opacity": 0}, max(t + 0.6, r3(t + d - 0.5)), 0.5, "power2.in")
-    s.tween("#" + rid, {"opacity": 0, "scale": 0.8}, {"opacity": 0.9, "scale": 1.05}, t, 0.5, "power2.out")
-    s.tween("#" + rid, {"opacity": 0.9}, {"opacity": 0}, max(t + 0.5, r3(t + d - 0.4)), 0.4, "power2.in")
+    s.tween("#" + rid, {"opacity": 0, "scale": 0.8}, {"opacity": 0.55, "scale": 1.08}, t, 0.6, "power2.out")
+    s.tween("#" + rid, {"opacity": 0.55}, {"opacity": 0}, max(t + 0.6, r3(t + d - 0.4)), 0.4, "power2.in")
     s.sfx("riser_short", t, "normal", 0.1)
     return Html(f'<i class="kt-halo" id="{hid}" data-grid="bleed" style="left:{r3(cx - 1.4 * r)}px;'
                 f'top:{r3(cy - 1.7 * r)}px;width:{r3(2.8 * r)}px;height:{r3(3.4 * r)}px"></i>'
@@ -1450,8 +1450,15 @@ class HookCard(Scene):
         ctx = self.ctx
         enter = self.enter or ("rise", "swing", "lift")[i % 3]
         cid, tid = self.uid("card"), self.uid("t")
+        # 140 px unless the title (plus its 4 % drift) would leave the safe width
+        import moments
+        gw = ctx.G["safe"][2] - ctx.G["safe"][0]
+        w100 = moments._tw(str(self.big), 100, 800) / 100.0
+        size = int(min(140, 0.98 * gw / max(0.1, w100) / 1.04))
+        fs = f' style="font-size:{size}px"' if size < 140 else ""
         self.parts = [card(self, "".join(self._body), self.head, self.meta, self.meta_tone),
-                      f'<div class="kt-hbig kt-grad" id="{tid}">{text(self.big, ctx)}</div>']
+                      f'<div class="kt-hbigw"><div class="kt-hbig kt-grad" id="{tid}"{fs}>'
+                      f'{text(self.big, ctx)}</div></div>']
         t0 = r3(self.start + 0.05)
         if enter == "rise":
             self.rise("#" + cid, t0, 260, 0.86, 24, 0.45)
@@ -1461,12 +1468,9 @@ class HookCard(Scene):
             self.rise("#" + cid, t0, 300, 1, 20, 0.45)
         else:
             raise KitError(f"kit: hook card {self.id}: enter {enter!r} — rise | swing | lift")
-        tt = self.title_t
-        if tt is None:
-            toks = str(self.big).split()
-            hit = ctx.find_in(toks[0], self.start - 0.3, self.end) if toks else None
-            tt = hit if hit is not None else t0 + 0.3
-        tt = max(t0 + 0.3, min(self.at(tt), self.end - 0.4))
+        # spec §4.4: the title fades up 0.3 s after its card (title_t may pin it to a word)
+        tt = t0 + 0.3 if self.title_t is None else self.at(self.title_t)
+        tt = max(t0 + 0.3, min(tt, self.end - 0.4))
         self.tween("#" + tid, {"opacity": 0, "y": 40}, {"opacity": 1, "y": 0}, tt, 0.3, "expo.out")
         self.drift("#" + cid, r3(t0 + 0.45), self.end)
         self.drift("#" + tid, r3(tt + 0.3), self.end)
