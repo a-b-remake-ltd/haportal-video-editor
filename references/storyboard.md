@@ -5,7 +5,8 @@ The edits this skill is judged against do not come from a menu of effects. They 
 witty UI moment that the viewer understands in under a second, landing on the exact word. The
 user of this skill will usually never send a correction or a reference, so this is the
 default, not an option. Write the storyboard table FIRST, then build it in the project's
-`scenes.py` on the kit (`references/kit.md`).
+`scenes.py` on the kit (`references/kit.md`). The house spec this method belongs to, with every
+number, is [house-spec.md](house-spec.md) (§3 is the storyboard).
 
 ---
 

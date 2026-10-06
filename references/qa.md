@@ -4,7 +4,8 @@ Nothing goes to the user until this loop has run on the **master** and the final
 below reads ✓ on every item it can measure. A passing snapshot of the composition is not
 proof: the encode, the caption layer, the punch-ins and the mix only exist in the master.
 
-Every number here is a gate in `scripts/preflight_qa.py` where it can be one. When a note
+The method behind these numbers is [the house spec](house-spec.md) (§10 the QA loop, §12 the
+final checklist). Every number here is a gate in `scripts/preflight_qa.py` where it can be one. When a note
 repeats, add a check there; run the negative test when you add one.
 
 ---

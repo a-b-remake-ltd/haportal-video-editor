@@ -84,6 +84,7 @@ Re-read this file at the start of every round.
 
 | Capability | Reference | Tool |
 |---|---|---|
+| The house spec: the whole method with every number (what "spec §N" in the scripts and references points to) | `references/house-spec.md` | (you) |
 | The storyboard method and the widget catalogue | `references/storyboard.md` | (you) |
 | Widget kit, hook world, overlays, per-video scenes | `references/kit.md` | `kit.py`, `scenes.py` |
 | Kinetic headlines | `references/kinetic.md` | `kinetic.py` |

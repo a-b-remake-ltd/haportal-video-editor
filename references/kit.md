@@ -2,7 +2,7 @@
 
 `scripts/kit.py` (components, motion, hook), `scripts/scenes.py` (the ctx, loading,
 validation, SFX), `templates/kit/*.css` (the look). The method for deciding WHAT to build is
-`references/storyboard.md`; this file is HOW.
+`references/storyboard.md`; this file is HOW. "spec §N" below = [the house spec](house-spec.md) §N.
 
 ```bash
 python3 $S/scripts/scenes.py example > scenes.py   # a starting file (invented script)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """The widget kit: literal UI "designed moments", authored per video on ONE visual language.
 
+spec §N = references/house-spec.md §N
+
 WHY THIS EXISTS. The edits this skill is measured against get their quality from 8-12
 LITERAL UI moments invented from each video's own lines: an inbox that never fills while the
 speaker says nobody gives you a chance, a calendar event that keeps being postponed, an

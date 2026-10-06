@@ -85,7 +85,7 @@ best round hole (the old `holes` logic) is the fallback. It writes `logo.mark`
 `shape` is `arch` (the door flies into the doorway), `hole` (into the counter) or `none` (a
 solid symbol: the door lands under it). Every part PNG holds only its own pixels with its
 anti-aliased edge; a counter painted white is knocked out. `mark: null` = a plain wordmark,
-no gate. Tested shapes: an inline arch ("p∩rtal"), a stacked arch over Hebrew words, a solid
+no gate. Tested shapes: an inline arch replacing a letter of a wordmark, a stacked arch over Hebrew words, a solid
 app-icon beside a wordmark, a ring at the end of a word, a two-letter monogram whose O has a
 white-filled counter, a badge + ring pair.
 
@@ -123,7 +123,7 @@ the configured language direction.
 ### `gate` — the frame becomes the logo (4.5 s)
 
 The idea, for any brand: **the video frame itself becomes part of the logo.** For a
-wordmark whose "o" is an arch (`p∩rtal`) the speaker's frame becomes the arch's doorway;
+wordmark whose "o" is an arch, the speaker's frame becomes the arch's doorway;
 for a ring it becomes the ring's centre; for a solid badge it lands under the badge.
 
 | t | what happens |
@@ -195,7 +195,7 @@ that places the cues drops the matching `stand_in` clips.
 | 0.62 – 1.24 | the circle flies and shrinks into the landing point (power3.inOut) |
 | 0.86 – 1.48 | **vault, beat 1:** the ring of the logo around the hole rotates in on the hole centre (−120° → 0°, scale 1.3 → 1) while a radial mask opens from the hole to ~2.25 × its radius |
 | 1.22 | vault thunk — the circle lands in the hole |
-| 1.48 – 2.23 | **vault, beat 2:** the mask opens from the ring to the whole mark (the KO "K, then wordmark" beat); logo shimmer |
+| 1.48 – 2.23 | **vault, beat 2:** the mask opens from the ring to the whole mark (the "symbol first, then the wordmark" beat); logo shimmer |
 | 1.75 – 2.15 | the face dissolves out of the hole, leaving the clean mark |
 | 1.95 | brand hairline draws under the logo (scaleX 0 → 1) |
 | 2.05 / 2.40 | tagline rises, handle fades up |
