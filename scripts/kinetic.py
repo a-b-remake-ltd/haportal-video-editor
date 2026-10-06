@@ -18,7 +18,7 @@ media.json contract — "headlines": [ ... ], each one:
    "text": "הטעות הזאת / *עולה לכם כסף.*",   the MARKUP below — or "lines" (the list form)
    "start": 9.04, "end": 10.8,      optional: found in src/words.json when missing (end =
                                     the next spoken word, i.e. it holds to the sentence end)
-   "style": "rollin" | "ko" | "bold",   default: config style.kinetic when it names a style,
+   "style": "rollin" | "classic" | "bold",   default: config style.kinetic when it names a style,
                                     else "rollin"
    "on": "footage" | "paper",       paper = ink + --hl-on-light, for a light surface
    "place": "chest" | "upper" | "center",  or "top": px — clamped into the safe zone;
@@ -89,7 +89,7 @@ STYLES = {
     "rollin": {"size": 112, "lh": 1.06, "default": "thin", "dur": 0.22,
                "from": '{ opacity: 0.18, filter: "blur(6px) grayscale(1)" }',
                "to": 'opacity: 1, filter: "blur(0px) grayscale(0)"'},
-    "ko":     {"size": 108, "lh": 1.18, "default": "thin", "dur": 0.24,
+    "classic": {"size": 108, "lh": 1.18, "default": "thin", "dur": 0.24,
                "from": '{ opacity: 0, y: 14, filter: "blur(6px)" }',
                "to": 'opacity: 1, y: 0, filter: "blur(0px)"'},
     "bold":   {"size": 104, "lh": 1.04, "default": "bold", "dur": 0.18,
@@ -453,8 +453,12 @@ def measure(cfg, heads, family, workdir="build"):
 
 
 # ------------------------------------------------------------------ plan
+STYLE_ALIASES = {"ko": "classic"}          # older configs keep working
+
+
 def default_style(cfg):
     k = (cfg.get("style") or {}).get("kinetic")
+    k = STYLE_ALIASES.get(k, k) if isinstance(k, str) else k
     return k if isinstance(k, str) and k in STYLES else "rollin"
 
 
@@ -487,6 +491,7 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         hid = str(hl.get("id") or f"h{n}")
         hl["id"] = hid
         style = hl.get("style") or default_style(cfg)
+        style = STYLE_ALIASES.get(style, style)
         if style not in STYLES:
             raise SystemExit(f"headline {hid}: style {style!r} — choose {', '.join(STYLES)}")
         S = STYLES[style]
@@ -749,7 +754,7 @@ CSS = """
              --kh-partner: color-mix(in srgb, var(--hl-on-light) 72%, var(--brand-paper));
              --kh-shadow: none; }}
       .kh.s-rollin {{ line-height: {lh_rollin}; }}
-      .kh.s-ko {{ line-height: {lh_ko}; }}
+      .kh.s-classic {{ line-height: {lh_classic}; }}
       .kh.s-bold {{ line-height: {lh_bold}; }}
       .kh .kl {{ display: block; position: relative; z-index: 1; }}   /* above the scrim */
       .kh .kl.sm {{ font-size: {sm}em; }}

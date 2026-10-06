@@ -30,7 +30,7 @@ style.json schema (every field optional; null = "no opinion", left untouched)
                  "transitions_allowed": ["page-turn", "frame-fly", "dissolve", ...],
                                                          (default [] = Omer's rule: no
                                                           transition on B-roll, ever)
-                 "kinetic": true | "rollin" | "ko" | "bold"},   (the reference builds
+                 "kinetic": true | "rollin" | "classic" | "bold"},   (the reference builds
                                                           word-by-word headlines; a name
                                                           sets the default headline style)
     "audio":    {"music_db_under_voice": 6-30 (positive dB), "music_character": str}

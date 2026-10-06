@@ -39,7 +39,7 @@ the text, do not silence it.
 ```json
 "headlines": [
   {"id": "h1", "text": "הטעות הזאת / *עולה לכם כסף.*"},
-  {"id": "h2", "text": "את *הכלי* / ^החדש^ שלנו,", "start": 25.84, "style": "ko"},
+  {"id": "h2", "text": "את *הכלי* / ^החדש^ שלנו,", "start": 25.84, "style": "classic"},
   {"id": "h3", "text": "זה ללא / ^הרשמה^ / *נגיש* *לכולם*"}
 ]
 ```
