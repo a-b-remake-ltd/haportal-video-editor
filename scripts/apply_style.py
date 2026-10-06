@@ -174,8 +174,10 @@ def v_transitions(v, ctx):
 def v_kinetic(v, ctx):
     if isinstance(v, bool):
         return v, None
-    if isinstance(v, str) and v.strip().lower() in kinetic.STYLES:
-        return v.strip().lower(), None
+    if isinstance(v, str):
+        name = kinetic.STYLE_ALIASES.get(v.strip().lower(), v.strip().lower())
+        if name in kinetic.STYLES:
+            return name, None
     raise ValueError(f"must be true/false or a headline style: {', '.join(kinetic.STYLES)}")
 
 
