@@ -48,11 +48,16 @@ Re-read this file at the start of every round.
    when the master, the config and the A-roll disagree. If `project.md` exists, summarise the
    last session in one sentence.
 2. **Ask once, briefly, in the user's language**, and continue with defaults if they say
-   nothing. The questions are: a reference video? A logo? The outro (only with a logo)? Organic,
-   or a paid ad too (`grid.profile: ads`)?
+   nothing. The questions are: a reference video? A logo? Organic, or a paid ad too
+   (`grid.profile: ads`)? With a logo, offer the outro as a CHOICE, not a yes/no: the looks
+   in one line each (`gate` recommended when the logo's mark has an opening, else `portal`;
+   `line`, `impact`), plus the line under the logo and the handle (both optional, the
+   user's exact words; if the logo already has words under its mark, suggest no tagline).
+   Wording in `references/outro.md` §1. No answer → no outro.
 3. **Transcribe, cross-check, correct.** Two engines. Captions show the intended, correctly
    spelled words; timings come from the audio. List every correction for the final report.
 4. **Framing map.** Measure the head, face, chin, chest and free zones before designing anything.
+   If it prints `FALLBACK`, those numbers are house defaults: correct them from the sheet.
 5. **Write the storyboard** (`storyboard.md`, method in `references/storyboard.md`). It is a
    table, line by line: time, words, on screen, captions on/off, punch, SFX. Then build it.
 6. **Build, render, master, QA** (below). Fix and re-render until clean. At most 3 passes, then
@@ -71,9 +76,12 @@ Re-read this file at the start of every round.
   off screen for at most ~5 s.
 - **Body:** 8-12 designed moments (sky widgets in the free zone, or full-frame overlays) plus
   5-7 kinetic headlines on the punchiest phrases. Plain captions fill the rest.
-- **Callbacks:** at least one, paid off near the end.
+- **Callbacks:** at least one, paid off near the end. Mark the payoff so QA sees it: a
+  fragment / moment flag `"callback": true` or `"payoff_of": "<plant id>"` (in scenes.py:
+  `f["payoff_of"] = "bars1"`), or an id containing `callback` / `payoff`.
 - **Punch-ins:** a snap between 1.0 and 1.06-1.14 on phrase boundaries every 2-4 s, bigger on
-  key words. Never inside the hook.
+  key words. Never inside the hook, a scene camera move, a headline or the outro
+  (`plan_punches.py` blocks them itself, after the first build).
 - **Ending:** the payoff on the final line, then the logo outro.
 - **Captions:** 1-3 words, hard swap, white 62 px weight 500 with a soft shadow, on a
   high-contrast band of the chest. Hidden during the hook world, every headline and the outro.
@@ -134,31 +142,42 @@ python3 $S/scripts/cut_aroll.py --src raw.mp4 --whole          # an avatar or cl
 # 2. words: two engines, diff, corrections → src/raw_words.json, then onto the A-roll timeline
 python3 $S/scripts/xcheck.py raw.mp4                           # writes src/transcript_diff.md
 #   fill src/corrections.json (intended spelling), then: xcheck.py raw.mp4 --apply-only
-python3 $S/scripts/map_words.py --raw src/raw_words.json       # → src/words.json
+python3 $S/scripts/map_words.py                                # src/raw_words.json → src/words.json
 
 # 3. framing + style
-python3 $S/scripts/framing_map.py assets/aroll.mp4 --apply     # LOOK at build/framing.png
+python3 $S/scripts/framing_map.py assets/aroll.mp4 --apply     # LOOK at build/framing_marked.png
 python3 $S/scripts/brand_from_logo.py logo.png --out brand/    # if there is a logo
 python3 $S/scripts/analyze_reference.py ref.mp4 --out style/   # if there is a reference
 
 # 4. the storyboard → storyboard.md, then the build files:
 #    scenes.py (the hook world + every designed moment, on the kit)
 #    media.json (headlines, any ready-made moments, "outro": {...})
-python3 $S/scripts/plan_punches.py --key "word,word" --apply
+#    scripts/beats.py: leave the shipped single "std" beat unless the speaker's LAYOUT
+#    changes (a lower panel under B-roll, full-frame B-roll, a MATTED hook); the kit's
+#    flying hook world is not a beat (the file's docstring says when and how)
 
-# 5. captions, build, captions again (hide windows), the caption layer
+# 5. captions, build, captions again (hide windows)
 python3 $S/scripts/captions.py
 python3 $S/scripts/build_index.py
 python3 $S/scripts/captions.py
+
+# 6. punch-ins — AFTER the first build: it reads index.html, build/scenes.json,
+#    build/caption_hide.json and build/outro.json, and blocks the hook, every scene camera
+#    move (cam_shake / cam_sway / cam_push, flies), every headline window and the outro.
+#    Key words / extra blocks in punches.json: {"key": ["word", "two words"], "block": [[a, b]]}
+python3 $S/scripts/plan_punches.py --apply                     # one change every 2-4 s
+python3 $S/scripts/build_index.py                              # rebuild with the punches
 python3 $S/scripts/caption_layer.py
 
-# 6. sound
+# 7. sound
 python3 $S/scripts/music.py --init --turn-word "<the turn phrase>"   # then edit music_plan.json
 python3 $S/scripts/music.py                                    # 2 variants, pick, align the drop
+#   exit code 3 = the change that lands on the turn is under 6 dB: consider ONE
+#   regeneration with  music.py --force --stronger-turn  (never more; then keep the best)
 python3 $S/scripts/bed.py --init && python3 $S/scripts/bed.py --apply
 python3 $S/scripts/build_index.py                              # rebuild with the bed
 
-# 7. gates, render, master, QA
+# 8. gates, render, master, QA
 python3 $S/scripts/validate.py --expect build/expected.json
 python3 $S/scripts/grid.py check index.html
 npx hyperframes check
@@ -176,7 +195,9 @@ python3 $S/scripts/qa_frames.py renders/final.mp4              # LOOK at every s
 ## Non-negotiables
 
 **Layout** (`references/grid.md`, `references/layout.md`)
-- Everything readable inside x 60-940, y 220-1520, centred on x 500. Sky widgets in y 230-600.
+- Everything readable inside x 60-940, y 220-1520, centred on the FRAME, x 540: an element
+  up to 800 px wide sits on x 540; a wider one moves left just enough to keep its right edge
+  on 940 (`grid.centered_box()`; the outro lockup scales down instead). Sky widgets in y 230-600.
   Headlines right-aligned at right 160 on the chest. Bottom cards anchored to y 1520.
 - Text sits on high-contrast areas, taken from the framing map.
 - Any camera rotation or sway is paired with a scale of at least 1.07.
@@ -211,8 +232,13 @@ python3 $S/scripts/qa_frames.py renders/final.mp4              # LOOK at every s
 Before showing anything: the A-roll's voice within 10 ms of the raw at every cut and one fps
 end to end (both gated); the snapshots and contact sheets looked at, frame by frame; loudness;
 no frozen frames (`freezedetect` 0.6 s), no black; intelligibility of the master ≥97% against
-the words; every transition frame looked at; the final checklist all ✓. If a check fails, fix
-the cause and re-render.
+the clean A-roll's transcript (words the engine mishears in the clean A-roll too are listed
+as transcriber noise, not as mix problems); every transition frame looked at; the final
+checklist all ✓. If a check fails, fix the cause and re-render.
+
+Then, for anything publishable, spawn ONE critic sub-agent with the master, the storyboard
+and the reference (if any), using the brief in `references/workflow.md` §6.7, and fix what
+it ranks first. At most 3 fix-render passes in all.
 
 ---
 

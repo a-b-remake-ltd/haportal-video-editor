@@ -69,8 +69,12 @@ asks which one opens; a take with a slip asks whether that sentence can go.
 signature:**
 
 > יש סרטון רפרנס שאתה אוהב את הסגנון שלו? אפשר לשלוח קישור או קובץ.
-> יש לוגו? נתאים את הצבעים למותג.
-> רוצה סגיר מונפש עם הלוגו בסוף?
+> יש לוגו? נתאים את הצבעים למותג, ואפשר גם סגיר מונפש עם הלוגו בסוף.
+
+When there is a logo, the outro is a CHOICE, not a yes/no: offer the looks in one line each
+(`gate` first and recommended when the logo's mark has an opening, else `portal`), then ask
+for the line under the logo and the handle — the exact wording is in `references/outro.md`
+§1.
 
 and in the same message: what kind of video it is, roughly how long, and where it goes —
 an organic reel or a paid ad. A paid ad switches the grid to the stricter Meta profile:
@@ -82,8 +86,10 @@ Where the answers go:
   (references/reference-analysis.md). Match the editing language, never copy content.
 - logo → `scripts/brand_from_logo.py logo.png`; brand colours drive motion, highlights and
   accents. A brand colour is never overwritten by a reference.
-- outro → only when there is a logo AND the user said yes: `config.json` →
-  `"outro": {"enabled": true}` (`scripts/outro.py`).
+- outro → only when there is a logo AND the user picked a look: `config.json` →
+  `"outro": {"enabled": true, "style": "gate", "tagline": "…", "handle": "@name"}`
+  (`scripts/outro.py`). If the logo already has words under its mark and the tagline repeats
+  them, suggest leaving the tagline empty (the build warns).
 - no answer / "you decide" → house defaults, and say in one line which ones you used.
 
 When something BLOCKS the work (a missing file, a slip with no clean retake), ask that one
@@ -110,10 +116,17 @@ method rules on top of it:
 - **Drill in at ambiguous moments** with `timeline_view.py <source> <start> <end>` — which
   of two takes, where a breath ends, whether a pause is a real pause.
 - **Caption text comes from the AUDITED raw transcript, carried onto the cut** with
-  `map_words.py --raw src/raw_words.json` (→ `src/words.json`). Then transcribe
+  `map_words.py` (reads `src/raw_words.json`, writes `src/words.json`). Then transcribe
   `assets/aroll.mp4` (`--out src/aroll.json --words src/aroll_words.json`) and run
-  `map_words.py --verify src/aroll.json`: the re-run hears each phrase with less context and
-  is often worse ("ChatGPT" → "ChatGPGPT"), so it is a check, not the source.
+  `map_words.py --verify src/aroll.json` (it checks the words.json already written): the
+  re-run hears each phrase with less context and is often worse ("ChatGPT" → "ChatGPGPT"),
+  so it is a check, not the source.
+- **Punch-ins come after the first build.** `plan_punches.py` reads `index.html`,
+  `build/scenes.json`, `build/caption_hide.json` and `build/outro.json` and refuses to run
+  without them; it blocks the hook, every scene camera move, every headline and the outro
+  itself. Key words (a bigger punch on their start) and any extra blocked seconds go in
+  `punches.json`: `{"key": ["word", "two words"], "block": [[12.3, 14.3]]}`. Rebuild after
+  `--apply`.
 
 ## 6. Self-evaluate — BEFORE showing anything
 
@@ -164,8 +177,10 @@ plain words ("הקול בעוצמה רגילה לאינסטגרם"). One or two 
 
 Notes come back in plain words. Re-plan, re-render only what changed, and
 **never re-transcribe an unchanged file** (the cache makes this automatic; do not pass
-`--force` out of habit). Fix the CLASS of every note, not just the instance (SKILL.md
-§Review etiquette). Final render only when the user confirms.
+`--force` out of habit). Fix the CLASS of every note, not just the instance: when a note
+could come back on another video, make it a gate in `preflight_qa.py` (with a negative
+test), not a line of prose (SKILL.md, "Read this first" §8). Final render only when the
+user confirms.
 
 ## 9. Persist
 

@@ -158,7 +158,7 @@ def follow_push(origin, t, s1, pivot, push):
 
 def tagline_duplication(brand, tagline):
     """A tagline that repeats words already INSIDE the logo image reads twice on screen
-    (a test reel: logo "<brand> / לבינה מלאכותית", tagline "הפורטל לבינה מלאכותית").
+    (a test reel: the line under the logo's mark came back as the tagline).
     No OCR: brand.json is the signal. If it records the logo's text (logo.text, logo.words,
     logo.mark.text, top-level text), the shared words are named; otherwise a text part
     under (or over) the mark plus a tagline is enough to warn. Returns a warning or None."""

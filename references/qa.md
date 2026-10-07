@@ -8,6 +8,10 @@ The method behind these numbers is [the house spec](house-spec.md) (§10 the QA 
 final checklist). Every number here is a gate in `scripts/preflight_qa.py` where it can be one. When a note
 repeats, add a check there; run the negative test when you add one.
 
+The gates' own negative tests (no video needed): `preflight_qa.py --selftest`,
+`framing_map.py --selftest`, `plan_punches.py --selftest`, `map_words.py --selftest`,
+`outro.py selftest`.
+
 ---
 
 ## Before designing: measure
@@ -15,7 +19,7 @@ repeats, add a check there; run the negative test when you add one.
 | Step | Command | Gate |
 |---|---|---|
 | Two-model transcription | `python3 $S/scripts/xcheck.py raw.mp4` | every disagreement decided (`--strict`); every correction key matched |
-| Framing map | `python3 $S/scripts/framing_map.py assets/aroll.mp4 --apply` | LOOK at `build/framing.png` and `build/framing_marked.png`; the numbers match the frames |
+| Framing map | `python3 $S/scripts/framing_map.py assets/aroll.mp4 --apply` | LOOK at `build/framing.png` and `build/framing_marked.png`; the numbers match the frames; no `fallback` key (else correct those numbers by hand) |
 
 **xcheck.py** runs the Hebrew fine-tune (ivrit-ai turbo) and Whisper large-v3-turbo on mlx
 (glossary as the initial prompt; faster-whisper large-v3 where mlx is missing), and writes
@@ -40,6 +44,12 @@ px (`build/framing.json`). These decide placement: headlines and captions on the
 face. If the default caption band sits on the chin or straddles the collar, `--apply` moves
 it onto the chest and records why. Say so in the report.
 
+The face is the largest skin blob that is warmer than the frame's own background (a cool
+face on a pale-blue sky is found too); frames whose readings contradict each other are
+dropped. When a number cannot be measured at all, framing_map does NOT stop: it writes the
+house default, lists it in `framing.json` → `"fallback"` and prints `FALLBACK` — LOOK at the
+sheet and fix those numbers before designing.
+
 ---
 
 ## The loop
@@ -52,7 +62,8 @@ it onto the chest and records why. Say so in the report.
    Captions (1-3 words, no accidental gap, none starting inside a hidden window), dashes and
    emoji in every on-screen string, CSS class collisions, heavy overlays (< 40 elements with
    filter blur / radial gradient / clip-path, hidden ones included), missing local assets,
-   rotation only on a scale ≥ 1.07, the grid, fonts, lint 0 errors.
+   rotation only on a scale ≥ 1.07 (read from every footage tween, the kit's `ft()` sway
+   included), every outro beat sounding once, the grid, fonts, lint 0 errors.
 
 2. **Snapshots before rendering:** `npx hyperframes snapshot --at <every designed moment,
    mid-animation and settled, plus every outro step> --no-end`. Fix, rebuild, re-snapshot
@@ -72,10 +83,15 @@ it onto the chest and records why. Say so in the report.
      heavy-overlay overload or a missing image.
    - **Intelligibility:** the master's speech part is re-transcribed with the same engine and
      glossary and compared word by word, ≥ 97 %. It is compared with `src/words.json` AND
-     with the clean A-roll transcribed the same way; the second number is gated, because
-     words.json carries corrected spellings the ear does not hear. Every differing word is
-     listed with the SFX / music events overlapping it: move the SFX off the word or deepen
-     the duck, then re-render. Reasonable final: 99 %.
+     with the clean A-roll transcribed the same way; the second number (master vs clean
+     A-roll, both machine) is gated, because words.json carries corrected spellings the ear
+     does not hear. A spot where only the A-roll's transcript is off (the master says what
+     words.json says), and every place the engine mishears the clean A-roll itself, is
+     listed apart as **transcriber noise** — not a mix problem, nothing to move. Every real
+     master difference is listed with the SFX / music events overlapping it: move the SFX
+     off the word or deepen the duck, then re-render. Reasonable final: 99 %.
+   - **Dead space** on a take kept whole (an avatar, a single take) is INFORMATIONAL: those
+     are the speaker's own pauses, kept on purpose; on a cut A-roll it fails.
 
 5. **Transition frames from the master:**
    ```bash
@@ -84,7 +100,10 @@ it onto the chest and records why. Say so in the report.
    Stills just after every element enters, when it has settled, before it leaves, on every
    punch-in step and through the outro, each with the grid drawn on. LOOK at every one.
 
-6. **Fix and repeat.** At most three fix-render passes; report anything left plainly.
+6. **Critic.** For anything publishable, ONE critic sub-agent with the master, the
+   storyboard and the reference, briefed as in `references/workflow.md` §6.7.
+
+7. **Fix and repeat.** At most three fix-render passes; report anything left plainly.
 
 ### Snapshots: what to look for
 
@@ -110,12 +129,12 @@ means only a human look decides it: look, then decide. Do not report done while 
 - [ ] Two-model transcription diffed; caption text corrected to the intended script; changes listed.
 - [ ] Framing map written; every element placed inside the grid's safe zone; captions on a high-contrast band.
 - [ ] Hook: words, frame flies away, 2-3 literal cards, return through the tint, speaker away ≤ 5 s.
-- [ ] 8-12 literal designed moments, 5-7 word-by-word headlines, at least 1 callback, nothing static > 0.6 s.
+- [ ] 8-12 literal designed moments, 5-7 word-by-word headlines, at least 1 callback (the payoff marked `"callback": true` / `"payoff_of": "<id>"`), nothing static > 0.6 s.
 - [ ] Captions 1-3 words, hard swaps, hidden under headlines, hook and outro; no dashes; no emoji.
-- [ ] Punch-ins on phrase boundaries (`plan_punches.py`); rotation only with scale ≥ 1.07.
+- [ ] Punch-ins on phrase boundaries (`plan_punches.py`, after the first build); rotation only with scale ≥ 1.07.
 - [ ] Music generated, 2 variants compared, drop aligned to the turn by offset, sections calibrated, relative drops, outro lift.
 - [ ] SFX on every transition, scaled to the voice, never on words (except marked impacts).
-- [ ] Outro geometry recomputed for this framing; logo inside the grid; no class collisions.
+- [ ] Outro geometry recomputed for this framing; lockup centred on x 540 (equal margins ±4 px); logo inside the grid; no class collisions; each outro beat sounds once.
 - [ ] Lint 0 errors; no heavy-overlay overload; all assets present.
 - [ ] Snapshots reviewed and clean; master at −14 LUFS; no freezes; no black; transcript match ≥ 97 %.
 - [ ] Report: where the file is, what happens on screen line by line, the music choice and why,

@@ -32,7 +32,8 @@ import sys
 # Vertical position (plate TOP) of the caption, per layout state. See references/captions.md
 # and references/grid.md. The speaker states sit in the Reels caption band (y 1110-1190),
 # read from scripts/grid.py so the grid has one owner. Every slot must pass
-# `grid.py check` — the plate is centred the way grid.centered_box() says.
+# `grid.py check` — the plate is centred by grid.centered_box(): up to 800 px wide it sits
+# on the frame centre x 540; a wider one keeps its right edge on 940.
 try:
     import grid as _grid
     _band_top = _grid.caption_top(_grid.profile("reels"), _grid.plate_height(70))

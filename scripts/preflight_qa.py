@@ -90,10 +90,17 @@ def check_dead_space(aroll):
     bad = [(t, d) for t, d in hits if d > 0.42 and (total - (t + d)) > 0.10]
     tail = [(t, d) for t, d in hits if (total - (t + d)) <= 0.10]
     if bad:
-        (warns if whole else issues).append(("kept-whole take, natural pauses: " if whole else "")
-                                            + "DEAD SPACE in %s: %s" % (
-            os.path.basename(aroll),
-            ", ".join(f"{t:.2f}s ({d:.2f}s long)" for t, d in bad)))
+        where = ", ".join(f"{t:.2f}s ({d:.2f}s long)" for t, d in bad)
+        if whole:
+            # informational: the take was kept whole ON PURPOSE, so these are the speaker's
+            # own pauses, not leftovers of a cut. Reported so the editor knows where they are
+            # (a designed moment or a punch there keeps the frame alive), never failed.
+            warns.append(f"pauses in the kept-whole take {os.path.basename(aroll)} — "
+                         f"INFORMATIONAL, not a failure: an avatar / single take keeps its own "
+                         f"pauses (cutting frames out of it makes the speaker jump; shorten one "
+                         f"only with a real re-cut): {where}")
+        else:
+            issues.append(f"DEAD SPACE in {os.path.basename(aroll)}: {where}")
     else:
         note = f"dead space: clean ({len(hits) - len(tail)} short breaths ≤0.42s)"
         if tail:
@@ -566,9 +573,18 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
     pct_w, diffs_w = score(ref, got)
     base = run(aroll, "aroll") if aroll and os.path.exists(aroll) else None
     pct, diffs, vs = pct_w, diffs_w, "src/words.json"
+    noise_lines = []
     if base:
-        pct_c, diffs_c = score(toks(base), got)
-        pct, diffs, vs = pct_c, diffs_c, "the clean A-roll"
+        # MASTER vs CLEAN A-ROLL, both machine transcripts: what the MIX changed. A spot
+        # where the master agrees with words.json and only the A-roll's transcript differs
+        # is the transcriber's noise, not a master problem; and every place the engine
+        # mishears the clean A-roll itself is listed apart, as noise.
+        pct, diffs, noise_ma = intelligibility_split(ref, toks(base), got)
+        vs = "the clean A-roll (both machine transcripts)"
+        _, diffs_aw = score(ref, toks(base))
+        noise_lines = [f"[{t:6.2f}] '{a_ or '∅'}' → '{b_ or '∅'}'" for t, _, a_, b_ in diffs_aw[:12]]
+        noise_lines += [f"[{t:6.2f}] master '{b_ or '∅'}' matches words.json; the A-roll "
+                        f"transcript had '{a_ or '∅'}'" for t, _, a_, b_ in noise_ma[:8]]
     ev = _audio_events()
     lines = []
     for t, t1, a_, b_ in diffs[:20]:
@@ -582,6 +598,10 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
     M["intelligibility"] = round(100 * pct, 1)
     msg = (f"intelligibility: {100 * pct:.1f} % of the words match {vs}"
            + (f" ({100 * pct_w:.1f} % vs words.json, which carries the corrected spellings)" if base else ""))
+    if noise_lines:
+        warns.append("transcriber noise — the engine mishears the CLEAN A-roll the same way, so "
+                     "these are NOT master problems (no SFX to move; check the captions say "
+                     "the intended words):\n      " + "\n      ".join(noise_lines))
     if pct < threshold:
         issues.append(f"INTELLIGIBILITY BELOW {100 * threshold:.0f} % — " + msg
                       + " — move the SFX off these words or deepen the duck:\n      "
@@ -592,6 +612,78 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
             warns.append("words heard differently in the master (check the SFX near each):\n      "
                          + "\n      ".join(lines))
     mark(11, pct >= threshold, f"{100 * pct:.1f} %")
+
+
+def intelligibility_split(words_t, aroll_t, master_t):
+    """(score, master problems, transcriber noise) from three token lists
+    [(token, start, end)]: words.json (the intended words), the clean A-roll's machine
+    transcript and the master's.
+
+    WHY: the gate compared the master with the clean A-roll — right, both are machine
+    transcripts of the same voice — but listed every difference as a master problem, even
+    where the A-roll's transcript was the one that dropped or misheard a word and the master
+    agreed with words.json (a test report blamed the mix for words the A-roll transcript
+    missed). A difference is NOISE when the master's words at that spot are what words.json
+    says; else it is a master problem. Score = 1 − (tokens in master problems / A-roll
+    tokens)."""
+    import difflib
+    sm = difflib.SequenceMatcher(None, [x[0] for x in aroll_t], [x[0] for x in master_t],
+                                 autojunk=False)
+    problems, noise, errs = [], [], 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        # one opcode can join unrelated spots (a word missed at 0.5 s and one changed at
+        # 9.3 s): split it into clusters of tokens that overlap in TIME, judge each alone
+        toks_ = sorted([(x, "a") for x in aroll_t[i1:i2]] + [(x, "m") for x in master_t[j1:j2]],
+                       key=lambda z: z[0][1])
+        clusters = []
+        for x, side in toks_:
+            if clusters and x[1] < clusters[-1][1] + 0.05:
+                clusters[-1][0].append((x, side))
+                clusters[-1][1] = max(clusters[-1][1], x[2])
+            else:
+                clusters.append([[(x, side)], x[2]])
+        for cl, _ in clusters:
+            a_ = [x for x, sd in cl if sd == "a"]
+            m_ = [x for x, sd in cl if sd == "m"]
+            t0, t1 = min(x[1] for x, _ in cl), max(x[2] for x, _ in cl)
+            near = "".join(x[0] for x in words_t if x[2] >= t0 - 0.25 and x[1] <= t1 + 0.25)
+            mstr = "".join(x[0] for x in m_)
+            astr = "".join(x[0] for x in a_)
+            row = (t0, t1, " ".join(x[0] for x in a_), " ".join(x[0] for x in m_))
+            if (mstr and mstr in near) or (not mstr and astr and astr not in near):
+                noise.append(row)           # the master says what words.json says
+            else:
+                problems.append(row)
+                errs += max(len(a_), len(m_))
+    return 1.0 - errs / max(1, len(aroll_t)), problems, noise
+
+
+def check_outro_cues(index_html="index.html", outro_json="build/outro.json"):
+    """An outro beat must sound ONCE. The outro plays its library cues itself (or its own
+    stand-ins when the library lacks them); a sound step that ALSO places soft_whoosh /
+    portal_suck / logo_sting on the same beat doubles it. Every cue in build/outro.json
+    (info.cues) is checked: no two <audio> clips starting within 0.15 s of it that are the
+    cue's library file or an outro stand-in."""
+    if not (os.path.exists(index_html) and os.path.exists(outro_json)):
+        return
+    cues = (json.load(open(outro_json, encoding="utf-8")).get("info") or {}).get("cues") or []
+    if not cues:
+        return
+    ev = _audio_events(index_html)
+    bad = []
+    for c in cues:
+        same = [e for e in ev if abs(e[0] - float(c["t"])) <= 0.15
+                and (e[4] == f"{c['name']}.wav" or e[4].startswith("outro_"))]
+        if len(same) > 1:
+            bad.append(f"{c['name']} @{float(c['t']):.2f}s plays {len(same)}×: "
+                       + ", ".join(e[3] or e[4] for e in same))
+    if bad:
+        issues.append("OUTRO CUE PLAYED TWICE (the outro places its own cues — do not place "
+                      "them again with sfx.py): " + "; ".join(bad))
+    else:
+        ok.append(f"outro: {len(cues)} cue(s), each sounding once")
 
 
 # ========================================================== the composition (index.html)
@@ -869,18 +961,28 @@ def check_on_screen_text(index_html="index.html", captions_json="captions.json")
     mark(5, not dashes and not emo, f"{len(dashes)} dash, {len(emo)} emoji")
 
 
-def check_rotation_scale(index_html="index.html", footage=("#aroll", "#cam")):
+def check_rotation_scale(index_html="index.html", footage=("#aroll", "#cam"), html=None):
     """Rotation / sway on the footage MUST ride on a scale ≥ 1.07, or the rotated frame shows
     black corners. Reads the timeline: every tween or set that rotates a footage selector is
     checked against the scale that footage has at that time (the latest scale set / tween
-    end before it, or its own scale)."""
-    if not os.path.exists(index_html):
-        return
-    js = "\n".join(re.findall(r"<script>(.*?)</script>", open(index_html, encoding="utf-8").read(), re.S))
+    end before it, or its own scale).
+
+    WHY the kit helpers: scenes emit their camera moves through the kit's own wrappers —
+    ft(sel, from, to, t) is a fromTo, and cam_sway rotates "#aroll" 1.2° through it. Only
+    tl.* calls on an exact "#aroll" were read, so a real reel reported "0 rotation(s)" while
+    it swayed. Any selector string that CONTAINS a footage id counts ("#aroll, #amatte",
+    "#aroll, #ofreeze")."""
+    if html is None:
+        if not os.path.exists(index_html):
+            return
+        html = open(index_html, encoding="utf-8").read()
+    js = "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S)) or html
     sel_re = "|".join(re.escape(f) for f in footage)
     calls = []
-    for m in re.finditer(r"tl\.(set|to|fromTo|from)\(\s*['\"](" + sel_re + r")['\"]\s*,(.*?)\)\s*;", js, re.S):
-        kind, sel, body = m.group(1), m.group(2), m.group(3)
+    for m in re.finditer(r"(?:tl\.(set|to|fromTo|from)|\b(ft))\(\s*['\"]([^'\"]*(?:" + sel_re +
+                         r")\b[^'\"]*)['\"]\s*,(.*?)\)\s*;", js, re.S):
+        kind, sel, body = m.group(1) or m.group(2), m.group(3), m.group(4)
+        sel = next(f for f in footage if f in sel)
         tm = re.search(r",\s*([\d.]+)\s*$", body.strip())
         t = float(tm.group(1)) if tm else None
         objs = re.findall(r"{([^{}]*)}", body)
@@ -897,7 +999,11 @@ def check_rotation_scale(index_html="index.html", footage=("#aroll", "#cam")):
         if cur is None:
             prev = [x for x in calls if x["sel"] == c["sel"] and x["scale"] is not None
                     and x["t"] is not None and x["t"] <= c["t"] + 1e-6]
-            cur = prev[-1]["scale"] if prev else 1.0
+            # the LATEST in time (document order is not time order: scene blocks, punch
+            # moments and the outro are emitted in separate runs); at the SAME time the one
+            # inserted last wins, as in GSAP (a punch handing back 1.02 at 12.32 and a sway
+            # lifting to 1.08 at 12.32: the sway's set comes later and holds)
+            cur = max(enumerate(prev), key=lambda ix: (ix[1]["t"], ix[0]))[1]["scale"] if prev else 1.0
         if cur < 1.07 - 1e-6:
             bad.append(f"{c['sel']} rotates {c['rot']:g}° at {c['t']:.2f}s on scale {cur:g}")
     if bad:
@@ -946,10 +1052,13 @@ def check_density(media_json="media.json", storyboard="storyboard.md"):
         w.append("no punch-ins (scripts/plan_punches.py)")
     cb_declared = os.path.exists(storyboard) and re.search(r"callback|קולבק|תשלום חוזר",
                                                            open(storyboard, encoding="utf-8").read(), re.I)
-    cb = any(x.get("callback") or re.search(r"callback|payoff", str(x.get("id", "")))
-             for x in moms + scenes)
+    cb, cb_why, dangling = callback_marks(moms + scenes, "scenes.py")
     if cb_declared and not cb:
-        w.append("storyboard.md declares a callback but no moment/scene is marked \"callback\"")
+        w.append("storyboard.md declares a callback but no moment/scene is marked: give the "
+                 "payoff fragment \"callback\": true or \"payoff_of\": \"<plant id>\" (or an "
+                 "id containing callback / payoff)")
+    for d in dangling:
+        w.append(f"payoff_of {d!r} names no scene or moment — the plant's id is misspelled")
     for x in w:
         warns.append("density: " + x)
     if not w:
@@ -958,6 +1067,41 @@ def check_density(media_json="media.json", storyboard="storyboard.md"):
     mark(3, True if hook else None, "hook" if hook else "no hook")
     mark(4, None if w else True, f"{designed} moments, {heads} headlines")
     mark(6, True if punch else None, "punch moment present" if punch else "no punches")
+
+
+CB_FLAG = re.compile(r"""["']callback["']\s*\]?\s*[:=]\s*True|\bcallback\s*=\s*True|"""
+                     r"""["']payoff_of["']\s*\]?\s*[:=]\s*["']([^"']+)["']|\bpayoff_of\s*=\s*["']([^"']+)["']""")
+
+
+def callback_marks(items, scenes_py="scenes.py"):
+    """(is there a callback, how it was found, payoff_of targets that match no id).
+
+    A payoff is marked by ANY of: an id containing "callback" / "payoff" (the old rule,
+    kept); a fragment / moment / media.json scene flag "callback": true; or
+    "payoff_of": "<plant id>". The flags are read from the json items (media.json moments
+    and scenes, build/scenes.json rows) and from scenes.py's own source — build/scenes.json
+    carries only id/start/end/words, so a flag set on a fragment in scenes.py
+    (f["callback"] = True, f["payoff_of"] = "bars1") is found there."""
+    ids = {str(x.get("id")) for x in items if x.get("id") is not None}
+    how, targets = [], []
+    for x in items:
+        if re.search(r"callback|payoff", str(x.get("id", "")), re.I):
+            how.append(f"id {x.get('id')}")
+        if x.get("callback") is True:
+            how.append(f"{x.get('id')} callback: true")
+        if x.get("payoff_of"):
+            how.append(f"{x.get('id')} payoff_of {x['payoff_of']}")
+            targets.append(str(x["payoff_of"]))
+    if scenes_py and os.path.exists(scenes_py):
+        src = "\n".join(ln.split("#", 1)[0] for ln in open(scenes_py, encoding="utf-8").read().splitlines())
+        for m in CB_FLAG.finditer(src):
+            t = m.group(1) or m.group(2)
+            how.append("scenes.py " + (f"payoff_of {t}" if t else "callback = True"))
+            if t:
+                targets.append(t)
+    # a target is only checkable when the plant ids are known (scenes.py fragments built)
+    dangling = [t for t in targets if ids and t not in ids]
+    return bool(how), how, dangling
 
 
 def check_lint():
@@ -1049,6 +1193,116 @@ def print_checklist():
         print(f"  {sym} {n:2d}. {text}\n         {note}")
 
 
+def selftest():
+    """Negative tests for the gates added after the from-zero install test. Exit 1 on any
+    failure."""
+    global issues, ok, warns
+    fails = []
+
+    def expect(cond, what):
+        print(f"  {'✓' if cond else '✗'} {what}")
+        if not cond:
+            fails.append(what)
+
+    def fresh():
+        global issues, ok, warns
+        issues, ok, warns = [], [], []
+        M.clear()
+    sway = ('<script>\n'
+            '  tl.set("#aroll", { scale: 1.02, y: 0 }, 0.0);\n'
+            '  { const { ft } = __KIT;   // scene pup1 10.44-15.10s\n'
+            '    ft("#aroll", { rotation: 0, x: 0 }, { rotation: 1.2, x: 16, duration: 0.32, '
+            'yoyo: true, repeat: 5 }, 12.32);\n  }\n</script>')
+    fresh()
+    check_rotation_scale(html=sway)
+    expect(issues and "1.2° at 12.32s on scale 1.02" in issues[0],
+           "kit ft() sway on scale 1.02 FAILS (was: '0 rotation(s)')")
+    fresh()
+    check_rotation_scale(html=sway.replace('    ft("#aroll"', '    tl.set("#aroll", { scale: 1.08 }, 12.32);\n    ft("#aroll"'))
+    expect(not issues and "1 rotation(s)" in ok[0], "the same sway on a 1.08 scale-up passes")
+    fresh()
+    late = sway.replace('  tl.set("#aroll", { scale: 1.02, y: 0 }, 0.0);',
+                        '  tl.set("#aroll", { scale: 1.10 }, 12.0);\n  tl.set("#aroll", { scale: 1.0 }, 3.0);')
+    check_rotation_scale(html=late)
+    expect(not issues, "the scale in force is the latest IN TIME, not in document order")
+    fresh()
+    tie = sway.replace('  tl.set("#aroll", { scale: 1.02, y: 0 }, 0.0);',
+                       '  tl.set("#aroll", { scale: 1.02 }, 12.32);').replace(
+        '    ft("#aroll"', '    tl.set("#aroll", { scale: 1.08 }, 12.32);\n    ft("#aroll"')
+    check_rotation_scale(html=tie)
+    expect(not issues, "two sets at the same time: the later one holds (GSAP order)")
+    fresh()
+    check_rotation_scale(html='<script>tl.set("#aroll, #ofreeze", { rotation: 0, scale: 1 }, 55.3);</script>')
+    expect(not issues, "a rotation: 0 reset is not a rotation")
+    # callbacks
+    yes, how, dang = callback_marks([{"id": "bars1"}, {"id": "bars-end", "payoff_of": "bars1"}], None)
+    expect(yes and not dang, f"payoff_of marks a callback ({how})")
+    yes, _, _ = callback_marks([{"id": "x", "callback": True}], None)
+    expect(yes, "callback: true marks a callback")
+    yes, _, dang = callback_marks([{"id": "a"}, {"id": "b", "payoff_of": "nope"}], None)
+    expect(dang == ["nope"], "a payoff_of naming no id is reported")
+    yes, _, _ = callback_marks([{"id": "bars-payoff"}], None)
+    expect(yes, "the old id rule (payoff / callback in the id) still holds")
+    yes, _, _ = callback_marks([{"id": "a"}, {"id": "b"}], None)
+    expect(not yes, "no mark → no callback")
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="pf_")
+    sp = os.path.join(tmp, "scenes.py")
+    open(sp, "w").write('def build(ctx):\n    f = s.done()\n    f["payoff_of"] = "bars1"  # the bars burst\n'
+                        '    # f["callback"] = True  (a comment is not a mark)\n    return [f]\n')
+    yes, how, dang = callback_marks([{"id": "bars1"}], sp)
+    expect(yes and not dang and "payoff_of bars1" in how[0], "a payoff_of set in scenes.py is found")
+    open(sp, "w").write('def build(ctx):\n    # f["callback"] = True\n    return []\n')
+    expect(not callback_marks([{"id": "a"}], sp)[0], "a commented-out flag does not count")
+    # intelligibility: the A-roll transcript's own misses are noise, a changed word is not
+    W_ = [("גידלו", 0.0, 0.3), ("אותנו", 0.3, 0.5), ("לחכות", 0.5, 0.9), ("הכלא", 9.3, 9.7),
+          ("חוזר", 33.1, 33.4)]
+    A_ = [("הכלא", 9.3, 9.7), ("עוזר", 33.1, 33.4)]
+    M_ = [("לחכות", 0.5, 0.9), ("הכאלה", 9.3, 9.7), ("עוזר", 33.1, 33.4)]
+    pct, prob, noise = intelligibility_split(W_, A_, M_)
+    expect([p[3] for p in prob] == ["הכאלה"], f"the word the MIX changed is the master problem ({prob})")
+    expect([n[3] for n in noise] == ["לחכות"], "a word the A-roll transcript missed but the master "
+                                               "heard right is noise, not a master problem")
+    expect(abs(pct - 0.5) < 1e-6, f"score counts only master problems ({pct:.2f})")
+    # dead space on a kept-whole take: reported as INFORMATIONAL, never failed
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    os.makedirs("src", exist_ok=True)
+    hfcfg.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+               "sine=f=220:d=1,apad=pad_dur=0.9", "-f", "lavfi", "-i", "sine=f=220:d=1.5",
+               "-filter_complex", "[0][1]concat=n=2:v=0:a=1,apad=pad_dur=0.45", "pause.wav"])
+    json.dump({"mode": "whole", "segments": [{}]}, open("src/bounds.json", "w"))
+    fresh()
+    check_dead_space("pause.wav")
+    expect(not issues and warns and "INFORMATIONAL" in warns[0],
+           "a kept-whole take's pause is a clearly informational warning, not a failure")
+    json.dump({"mode": "chunks", "segments": [{}, {}]}, open("src/bounds.json", "w"))
+    fresh()
+    check_dead_space("pause.wav")
+    expect(issues and "DEAD SPACE" in issues[0], "the same pause in a CUT A-roll fails")
+    os.chdir(cwd)
+    # duplicate outro cue
+    os.makedirs(os.path.join(tmp, "build"))
+    json.dump({"info": {"cues": [{"name": "soft_whoosh", "t": 55.37}]}},
+              open(os.path.join(tmp, "build", "outro.json"), "w"))
+    ih = os.path.join(tmp, "index.html")
+    open(ih, "w").write('<audio id="osfx_soft_whoosh" data-start="55.37" data-duration="1" '
+                        'src="assets/sfx/soft_whoosh.wav"></audio>\n')
+    fresh()
+    check_outro_cues(ih, os.path.join(tmp, "build", "outro.json"))
+    expect(not issues, "one outro cue per beat passes")
+    open(ih, "a").write('<audio id="x9" data-start="55.40" data-duration="1" '
+                        'src="assets/sfx/soft_whoosh.wav"></audio>\n')
+    fresh()
+    check_outro_cues(ih, os.path.join(tmp, "build", "outro.json"))
+    expect(issues and "2×" in issues[0], "the same cue placed again by a sound step FAILS")
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+    fresh()
+    print(f"  {'all passed' if not fails else str(len(fails)) + ' FAILED'}")
+    return 1 if fails else 0
+
+
 def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("project", nargs="?", default=".")
@@ -1062,7 +1316,10 @@ def main():
                     help="skip re-transcribing the master (it takes ~30 s per minute)")
     ap.add_argument("--no-chrome", action="store_true", help="skip the Chrome-based checks")
     ap.add_argument("--lint", action="store_true", help="also run `hyperframes lint` (0 errors)")
+    ap.add_argument("--selftest", action="store_true", help="negative tests of the gates")
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
     os.chdir(a.project)
@@ -1078,6 +1335,7 @@ def main():
     check_class_collisions(a.html)
     check_assets(a.html)
     check_rotation_scale(a.html)
+    check_outro_cues(a.html)
     check_density()
     if not a.no_chrome:
         check_grid(cfg, a.html)

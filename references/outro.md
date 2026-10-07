@@ -33,12 +33,19 @@ otherwise recommend `portal` (and leave `gate` out when there is no mark at all)
 > **קו**: קו דק בצבע המותג מעביר דף מימין לשמאל, הלוגו נחשף והסלוגן מוקלד אות אחר אות.
 > **אימפקט**: חיתוך חד לצבע המותג, הלוגו נוחת בעוצמה עם הבזק קטן. לסרטונים אנרגטיים.
 
-Then ask for the line(s) under the logo (`gate` shows the tagline only, word by word):
+Then ask for the line(s) under the logo (every style shows both: the tagline, word by word
+in `gate`, and the handle under it):
 
 > מה לכתוב מתחת ללוגו? משפט קצר (עד 40 תווים) ושם המשתמש שלך, למשל @name
 
 Both are optional. Do not invent a tagline; an empty one simply leaves it out. Use the
 user's exact wording and spelling.
+
+**A tagline the logo already says.** When the logo has a line of text under (or over) its
+mark (`logo.mark.parts.below` / `above` in brand.json), a tagline often repeats it — a test
+reel showed "לבינה מלאכותית" twice. Look at `brand/word_below.png`; if the tagline repeats
+it, suggest leaving the tagline empty. `outro.py` warns about it on every plan (and names
+the shared words when brand.json records the logo's text in `logo.text` / `logo.words`).
 
 No answer, or "no" → no outro. Write nothing to the config.
 
@@ -61,7 +68,7 @@ No answer, or "no" → no outro. Write nothing to the config.
 | `tagline` | one line under the logo, in the reel's language (RTL aware) | none |
 | `handle` | e.g. `@name`, always rendered LTR-isolated | none |
 | `start` | composition second the outro begins | A-roll end − 0.2 s |
-| `face` | `[x, y]` of the face in composition px, if the measurement is wrong | `build/framing.json`, else measured |
+| `face` | `[x, y]` or `[x, y, width]` of the face in composition px, if the measurement is wrong | `build/framing.json` (framing_map.py's `face_cx/face_cy/face_w`: the sample nearest the A-roll end, else the take's median), else measured |
 | `background` | `paper` or `dark` (portal/line; impact is always brand primary) | chosen by contrast |
 | `center_y` | vertical centre of the lockup (gate: of the logo; the tagline hangs below) | 860 |
 | `no_hole` | `true` forces the disc landing even when the logo has a hole | false |
@@ -121,10 +128,24 @@ on a ring of points outside it. It exits 1 when the frame is still full-screen f
 
 ## 3. The styles
 
-All times are seconds after the outro start `O`. Everything sits inside the Reels grid:
-the lockup is centred on **x 500** (not 540) around **y ≈ 860**, inside the safe zone
-x 60-940 / y 220-1520 and inside the 3:4 profile crop. Text uses `var(--brand-font)` and
-the configured language direction.
+All times are seconds after the outro start `O`. Everything sits inside the Reels grid.
+
+**Centring (every style).** The lockup — the mark, the wordmark parts, the tagline and the
+handle — is centred on the **frame centre, x 540**, around **y ≈ 860**: the logo box on
+x 540, and every text line in the centred lane x 140-940 (`grid.center_lane()`, the same
+rule as `grid.centered_box()`), `text-align: center`. It is never centred on the safe
+zone's x 500 and never shifted sideways for the rail: a lockup that would pass x 940 is
+**scaled down** until it fits centred — at the END of its slow push (lane ÷ push, and for
+`impact` also minus its ±9 px shake). The push pivots on x 540 too, so the margins stay
+equal to the last frame; the footage in the door / hole follows the push with the same
+transform (`follow_push`), so it never slides off the opening. `plan()` refuses a lockup
+that is not centred (`centring_problems`). Measured on renders (`preview --render`, the
+pixels of the last second): logo and words within 1 px of equal margins, the handle 1 px,
+a Hebrew tagline 2 px (the glyphs' own side bearings — the line box is exact). While the
+tagline builds word by word the visible words sit on the right (reading order) — that is
+the reveal, not the layout.
+
+Text uses `var(--brand-font)` and the configured language direction.
 
 ### `gate` — the frame becomes the logo (4.5 s)
 
@@ -143,14 +164,16 @@ for a ring it becomes the ring's centre; for a solid badge it lands under the ba
 | 1.50 – 2.10 | the words slide out **from behind the mark**: left part from x +(its width), right part from x −(its width), a part below drops out of the mark's base, each blur 10 → 0, 0.6 s expo.out, inside overflow-hidden wrappers that end at the mark's edge |
 | 1.58 – 2.08 | the speaker fades out inside the opening while a brand-light gradient fills it — he steps through |
 | 2.12 + 0.2·i | the tagline lands word by word (`word()`: faint grey blur → colour, 0.22 s); first word weight 700 white, the rest weight 300 in a light tint of `--hl-on-dark` |
-| 1.40 → end | the whole lockup pushes 1 → 1.045, pivoting on the opening |
+| after the tagline + 0.1 | the handle fades up under it (LTR-isolated, `--hl-on-dark`) |
+| 1.42 → end | the whole lockup pushes 1 → 1.045, pivoting on x 540 at the opening's height; the footage still in the doorway follows it |
 | end − 0.4 | fade to black |
 
 **Geometry** (all derived per video, never hand-placed):
 
 - The lockup: `logo.mark.content` (the union of mark and words, no empty margin) at equal
   area (≤ 660 × 420; a stacked lockup may use 580 px of height), grown until the opening is
-  ≥ 84 px wide on screen, centred on the safe centre x 500, logo centre at `center_y`.
+  ≥ 84 px wide on screen, then scaled down if it is wider than the lane after the push;
+  centred on the frame centre x 540, logo centre at `center_y`.
 - The landing rect: the opening on screen with a 4-5 % overscan on the sides and top, so
   the door's edge slides under the mark's ink (arch: flush with the base).
 - The door: centred on the face (`outro.face` → `build/framing.json` → skin-mask
@@ -159,9 +182,10 @@ for a ring it becomes the ring's centre; for a solid badge it lands under the ba
 - The flight: with `transform-origin` o (the door centre), scale `s = landingWidth /
   doorWidth`, and the door's top-centre p pinned to the landing's top-centre q:
   `t = q − (o + (p − o)·s)`.
-- **Grid shift**: if the lockup pokes into the right rail (or past the left margin), the
-  lockup moves as one piece and the landing, the orbs' sink target and the words are all
-  derived after the shift (reported as `info.grid_shift`).
+- **No grid shift.** The lockup used to move left as one piece when it poked into the
+  rail; it now scales down instead (reported as `info.scaled`), so it stays on x 540. The
+  landing, the orbs' sink target and the words are all derived from the final box, so the
+  door still lands exactly on the mark.
 - Words and mark on the dark background: a part keeps its colours when ≥ 85 % of it reads
   on dark (≥ 60 % for the mark), else it becomes a white silhouette (a navy wordmark does).
 
@@ -195,13 +219,15 @@ JUMP to the end value instead, and both have shipped:
 - **an `inset()` the browser can shorten** (right == left, or radius 2 == radius 4): the
   epsilon rule above.
 
-**Sound.** The plan carries cue dicts for the sound pipeline (`plan["cues"]`, and
-`info.cues` in `build/outro.json`): `{name, t, base_vol, exempt: true, stand_in}` —
-`soft_whoosh` at O+0.05, `portal_suck` at O+1.12, `logo_sting` at O+1.7 (base volumes .30 /
-.30 / .26, scaled to the voice by the sound step; exempt = deliberate beats, never slid off
-words). Until the sound step places them from its library, the outro's own synthesised
-stand-ins play (`osfx_page`, `osfx_rush`, `osfx_shimmer`, levelled as in §5); a sound step
-that places the cues drops the matching `stand_in` clips.
+**Sound.** Three beats: `soft_whoosh` at O+0.05, `portal_suck` at O+1.12, `logo_sting` at
+O+1.7. The outro plays them ITSELF, one sound per beat: the library file when the project's
+`audio.sfx_dir` has it (sfx.py writes the library there), else the skill's `assets/sfx`
+copy (copied into the project), and only when neither exists its own synthesised stand-in
+(`outro_page`, `outro_rush`, `outro_shimmer`). Either way it is levelled by where its own
+peak lands against the voice (§5), so the two sound alike in level. The build prints which
+one each beat uses, and `info.cues` in `build/outro.json` records it (`plays`, `source`).
+**Do not place these cues again with sfx.py** — `preflight_qa.py` fails an outro beat that
+sounds twice.
 
 ### `portal` — the circle (4.4 s)
 
@@ -304,9 +330,11 @@ the same as the steps between identical video frames (0.17-0.76) — encoder noi
 
 ## 5. Sound
 
-All three cues are synthesised by `outro.py sfx` (no licence, no attribution) into
-`audio.sfx_dir`: `outro_page` (page-turn swish), `outro_vault` (low thunk + metal ring +
-latch), `outro_shimmer` (soft bell partials + air), `outro_rush`, `outro_slam`, `outro_pop`.
+`portal`, `line` and `impact` use the outro's own cues, synthesised by `outro.py sfx` (no
+licence, no attribution) into `audio.sfx_dir`: `outro_page` (page-turn swish), `outro_vault`
+(low thunk + metal ring + latch), `outro_shimmer` (soft bell partials + air), `outro_rush`,
+`outro_slam`, `outro_pop`. `gate` plays the library's `soft_whoosh` / `portal_suck` /
+`logo_sting` and falls back to these only when the library lacks them (§3).
 
 **Levels are measured, never copied** (references/sound.md). The voice reference is the
 90th percentile of the A-roll's EBU R128 momentary loudness (the level of spoken words).
@@ -369,8 +397,12 @@ Pull frames every 0.2 s from `O − 0.4` to the end of the **encoded** file and 
 - [ ] portal: the circle CLOSES over ~0.6 s around the face (the `preview --render` circle
       check passes) and lands exactly in the hole — no background ring between face and ink
 - [ ] the logo is the real file, unclipped, inside the safe zone; nothing in a red zone
+- [ ] the lockup is centred on x 540: on a late frame, left margin == right margin (±4 px)
+      for the logo, the words, the tagline and the handle
+- [ ] the tagline does not repeat the logo's own words (the build warns)
 - [ ] tagline reads in the right order (RTL for Hebrew), in the brand font, one line
 - [ ] the last caption is gone from the outro start (`finish.py` prints "captions off from …")
 - [ ] the master is as long as the render (finish.py fails if the overlay truncates it)
 - [ ] audio: the vault/slam is clearly audible but not louder than the speech; the bed is
-      under the cues and reaches silence on the last frame (`ebur128` momentary over the outro)
+      under the cues and reaches silence on the last frame (`ebur128` momentary over the outro);
+      every outro beat sounds once (`preflight_qa.py` checks it)

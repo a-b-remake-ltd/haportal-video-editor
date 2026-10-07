@@ -58,7 +58,10 @@
                    font-family: var(--brand-font), "Heebo", sans-serif; font-size: ${hfs}px;
                    font-weight: 600; line-height: 1.25; letter-spacing: 0.06em;
                    color: ${hd_color}; }
-      #og-handle span { display: inline-block; direction: ltr; unicode-bidi: isolate; }
+      /* letter-spacing trails the LAST glyph too: take it back so the ink, not the box, is
+         centred (0.06em ≈ 2 px off centre otherwise) */
+      #og-handle span { display: inline-block; direction: ltr; unicode-bidi: isolate;
+                        margin-right: -0.06em; }
       /* orbs: a solid colour plus a box-shadow glow, NOT a radial gradient — dozens of
          gradient/blur/clip layers make the capture render black (references/hyperframes.md) */
       .og-orb { position: absolute; border-radius: 50%; opacity: 0; }
