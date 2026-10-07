@@ -258,9 +258,13 @@ The render's integrated loudness picks the chain:
 | **quiet / peaky** (≤ −25 LUFS; AI avatars often arrive near −36) | `volume=+20dB` (scaled down for less quiet input), then `acompressor=threshold=0.06:ratio=3:attack=4:release=140:makeup=1`; pre-limiter target starts at −12.8 |
 | **normal** (≈ −20 LUFS) | `acompressor=threshold=0.08:ratio=2`, no pre-gain; pre-limiter target starts at −13.4 |
 
-Then: `aresample=192000, volume=G, alimiter=limit=0.84:attack=2:release=60:level=false,
-aresample=48000`. That is a 4× oversampled limiter at −1.5 dBFS with auto-level off,
-because `level=true` puts the peak straight back.
+Then: `aresample=192000, volume=G, alimiter=limit=<ceiling>:attack=2:release=60:level=false,
+aresample=48000`, a 4× oversampled limiter with auto-level off (`level=true` puts the peak
+straight back). The ceiling starts 0.2 dB under `render.target_peak_db` (house −1.5, never
+above −1.0) and is lowered by the measured overshoot + 0.1 dB until the TRUE peak of the
+ENCODED AAC is under the target — AAC encoding adds overs a sample-peak limiter cannot see.
+`finish.py --check renders/final.mp4` re-measures a master on its own and fails it if either
+target is missed.
 
 `finish.py` **measures the encoded master** and moves the pre-limiter target until it lands
 within the tolerance, usually in 2 passes, then muxes the measured AAC into the video

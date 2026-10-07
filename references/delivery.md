@@ -5,7 +5,7 @@
 ## Render
 
 ```bash
-HF_VIDEO_COVERAGE_THRESHOLD=0 npx hyperframes render --quality high --video-bitrate 32M
+HF_VIDEO_COVERAGE_THRESHOLD=0 npx hyperframes render --quality high --fps <project.fps> --video-bitrate 32M
 ```
 
 → mp4 1080x1920, **30–35 Mbps**. Never ship the ~7 Mbps default: social platforms re-encode
