@@ -7,14 +7,17 @@ values that survived review — good starting points, not constants. Solve them 
 
 ## The platform safe zone: this constrains framing, not just graphics
 
-**Everything readable lives in x 60-940, y 220-1520, centred on x 500.** The numbers and
+**Everything readable lives in x 60-940, y 220-1520. Anything up to 800 px wide is centred on
+the frame (x 540); only a wider element shifts left so its right edge stays at 940**
+(`grid.centered_box()`). The numbers and
 the gate are in `references/grid.md` / `scripts/grid.py`. Read that file before laying out
 anything.
 
 Instagram covers the top bar (y 0-220), the whole bottom caption-and-button strip (y
 1520-1920) and the right-hand action rail (x 940+ from y 880 down). A card row whose labels
-sat at y=22 gets cropped away. A caption centred on x 540 loses its last word under the
-buttons.
+sat at y=22 gets cropped away. A caption wider than 800 px centred on x 540 would lose its last
+word under the buttons, so wide elements shift left; narrower ones stay truly centred, because
+a block sitting on x 500 next to a centred speaker reads as off-centre.
 
 Within the safe zone, keep the caption plate well clear of the mouth: measure the chin and
 leave **≥200 px**. The speaker captions sit in the caption band (y 1110-1190), so the

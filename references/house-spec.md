@@ -198,7 +198,7 @@ Opt-in: only when there is a logo **and** the user said yes (never on a 16:9 pie
 - A plan for a 55s motivational piece plus outro (total ≈60s):
 ```json
 {"positive_global_styles": ["instrumental modern cinematic trap hybrid","deep 808 sub bass","ticking clock percussion that builds","hopeful synth pads","inspiring and powerful","leaves space for a spoken Hebrew voice","starts immediately"],
- "negative_global_styles": ["vocals","singing","lyrics","choir","rap","vocal chops","cheesy","EDM drop","aggressive distortion","long silence","fade in from silence"],
+ "negative_global_styles": ["vocals","singing","lyrics","choir","rap","vocal chops","cheesy","aggressive distortion","long silence","fade in from silence"],
  "sections": [
   {"section_name":"Part 1","duration_ms":10000,"positive_local_styles":["tense and restrained, ticking like waiting, sparse pulse"],"negative_local_styles":["silence"],"lines":[]},
   {"section_name":"Part 2","duration_ms":7500,"positive_local_styles":["tension builds, darker, ends with a short hit"],"negative_local_styles":["silence"],"lines":[]},
