@@ -15,7 +15,18 @@ Then composite the caption layer and pin the master to SDR:
 
 ```bash
 python3 scripts/finish.py           # overlay assets/captions.webm + force bt709 + assert
+                                    # + master the audio and GATE it (below)
+python3 scripts/finish.py --check renders/final.mp4   # the audio gate alone, any file
 ```
+
+`finish.py` masters to **−14 LUFS ± 0.4** with a **true peak ≤ `render.target_peak_db`**
+(config; house −1.5, the house range is −1.3 to −1.5, and anything above −1.0 is clamped to
+−1.0). It measures `ebur128=peak=true` on the **encoded AAC**, lowers the oversampled
+limiter's ceiling by the overshoot until the true peak is under the target, raises the gain
+to keep −14, and exits 1 if either misses. Why not trust the limiter's setting: alimiter
+caps the *sample* peak; the trip back from 192 kHz and the AAC encoder rebuild the waveform
+between samples and add overs. Measured on a bright, transient-heavy mix: limiter at
+−1.5 dBFS, encoded master **−0.5 dBTP**, which `volumedetect` still read as a fine −1.1 dB.
 
 ---
 
@@ -27,8 +38,7 @@ python3 scripts/finish.py           # overlay assets/captions.webm + force bt709
 | Bitrate | `ffprobe -show_entries format=bit_rate` | 30–35 Mbps |
 | Colour | `ffprobe -show_entries stream=color_space,color_transfer,color_primaries` | `bt709` everywhere; **no** `bt2020` / `arib-std-b67` / `smpte2084` |
 | Pixel format | same probe | `yuv420p` (8-bit) |
-| Audio peak | `ffmpeg -i out.mp4 -af volumedetect -f null -` | max ≈ **−1 to −2 dB** |
-| Loudness | `ffmpeg -i out.mp4 -af ebur128=peak=true -f null -` | integrated **−14 LUFS ±1.5**, true peak ≤ **−1 dBTP**. Reels normalise to about −14: a quieter master just plays quieter than the next video. Get there with a gentle compressor before the limiter, never `loudnorm` in dynamic mode, which pumps |
+| Loudness + true peak | `python3 scripts/finish.py --check out.mp4` (= `ffmpeg -i out.mp4 -af ebur128=peak=true -f null -`) | integrated **−14 LUFS ± 0.4**, **true** peak ≤ `render.target_peak_db` (house −1.5; never above −1.0 dBTP). Not `volumedetect`: that is the sample peak, which reads under the true peak. Reels normalise to about −14: a quieter master just plays quieter than the next video. Get there with a gentle compressor before the limiter, never `loudnorm` in dynamic mode, which pumps |
 | Frames | full contact sheet of the **encoded** file | every beat + boundary frames checked |
 
 ```bash

@@ -109,7 +109,13 @@ python3 scripts/outro.py preview --style gate --render       # → build/outro_p
 python3 scripts/outro.py preview --render                    # auto: gate or portal
 python3 scripts/outro.py plan                                # what the build will emit
 python3 scripts/outro.py face --aroll assets/aroll.mp4       # the measured face centre
+python3 scripts/outro.py selftest                            # the outro gates' own tests
 ```
+
+`preview --style portal --render` does not stop at the mp4: it reads three frames late in
+the circle's close and **proves the circle drew** — footage inside it, the end background
+on a ring of points outside it. It exits 1 when the frame is still full-screen footage
+(the failure below), and says "inconclusive" when the footage looks like the background.
 
 ---
 
@@ -177,6 +183,17 @@ Override a wrong pick by editing `logo.mark` in brand.json only with a reason in
   their positions come from a fixed seed in Python, not `Math.random()`;
 - per-orb ids and tween times so no two tweens overlap on one property;
 - initial hidden states are CSS (`opacity: 0`, `stroke-dashoffset: 100`), never early sets.
+
+**Every tweened CSS string is gated** (`outro.tween_string_problems`, run by every
+`plan()`; the build stops on a hit). Two things make GSAP stop interpolating a string and
+JUMP to the end value instead, and both have shipped:
+- **a number not written the way JavaScript prints it.** GSAP finds an end number's unit as
+  `token.substr(String(parseFloat(token)).length)`; Python's `f"{340.0}px"` is `340.0px`,
+  whose "unit" is then `.0px`, never the start's `px`. That is why the portal's circle never
+  rendered: `circle(340.0px at 540.0px …)` stayed full-frame for 0.6 s, then popped. All
+  clip-path numbers go through `outro.cssn()` (`340`, `117.479`, never `340.0` or `.5`);
+- **an `inset()` the browser can shorten** (right == left, or radius 2 == radius 4): the
+  epsilon rule above.
 
 **Sound.** The plan carries cue dicts for the sound pipeline (`plan["cues"]`, and
 `info.cues` in `build/outro.json`): `{name, t, base_vol, exempt: true, stand_in}` —
@@ -349,7 +366,8 @@ Pull frames every 0.2 s from `O − 0.4` to the end of the **encoded** file and 
       fills the doorway as the speaker fades
 - [ ] gate: `logo.mark` picked the symbol a designer would (look at `brand/mark.png` and the
       `word_*.png` files before the build)
-- [ ] portal: the circle lands exactly in the hole — no background ring between face and ink
+- [ ] portal: the circle CLOSES over ~0.6 s around the face (the `preview --render` circle
+      check passes) and lands exactly in the hole — no background ring between face and ink
 - [ ] the logo is the real file, unclipped, inside the safe zone; nothing in a red zone
 - [ ] tagline reads in the right order (RTL for Hebrew), in the brand font, one line
 - [ ] the last caption is gone from the outro start (`finish.py` prints "captions off from …")

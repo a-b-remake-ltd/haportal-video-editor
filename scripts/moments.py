@@ -34,6 +34,7 @@ Types (see `moments.py list` and references/moments.md):
 Usage
   python3 scripts/moments.py list
   python3 scripts/moments.py preview <type> [--entry '{json}' | --media media.json --id m1]
+  python3 scripts/moments.py selftest          # the cue-search tests
           [--pad 1.2] [--out build/moments_preview/<type>] [--render] [--sheet 0.12]
 """
 from __future__ import annotations
@@ -236,7 +237,7 @@ def sync(tokens, ctx, t0, t1):
         n = _norm(tok)
         if not n:
             continue
-        for k in range(j, min(len(sp), j + 9)):
+        for k in range(j, min(len(sp), j + SYNC_LOOKAHEAD)):
             if _same(n, sp[k][2]):
                 out[i] = (sp[k][0], sp[k][1])
                 j = k + 1
@@ -275,20 +276,112 @@ def sync(tokens, ctx, t0, t1):
     return res, matched
 
 
+SYNC_LOOKAHEAD = 9     # sync(): how far past the previous match the NEXT display token may be
+
+
+def find_phrase(tokens, ctx, t0, t1, look=SYNC_LOOKAHEAD):
+    """The spoken span (start, end) of a cue phrase, searched over the WHOLE window
+    [t0 − 0.3, t1 + 0.05]: the first word may sit anywhere in it (the nearest occurrence
+    after the window start wins), and each following word must come within `look` spoken
+    words of the one before. Prefix-tolerant the same way as sync() ("פייסבוק" finds the
+    spoken "בפייסבוק"), and a token may match two spoken words the transcript split.
+
+    WHY not sync(): sync() walks display tokens in order with a lookahead of 9 spoken words
+    from the previous match — right for revealing a title word by word, wrong for a cue.
+    Starting from the window's first word, a cue word said as word 10 or later of a long
+    window was simply "not spoken" and the moment fell back to its start.
+    Returns (start, end) or None."""
+    sp = [(s, e, _norm(w)) for s, e, w in _words(ctx) if t0 - 0.3 <= s <= t1 + 0.05]
+    ns = [_norm(t) for t in tokens]
+    ns = [n for n in ns if n]
+    if not ns or not sp:
+        return None
+
+    def match_at(k, n):
+        """Spoken words consumed by token n at index k: 1, 2 (a split word) or 0."""
+        if _same(n, sp[k][2]):
+            return 1
+        if k + 1 < len(sp) and _same(n, sp[k][2] + sp[k + 1][2]):
+            return 2
+        return 0
+
+    first_only = None
+    for k0 in range(len(sp)):
+        used = match_at(k0, ns[0])
+        if not used:
+            continue
+        span = [sp[k0][0], sp[k0 + used - 1][1]]
+        if first_only is None:
+            first_only = tuple(span)
+        j, ok = k0 + used, True
+        for n in ns[1:]:
+            hit = None
+            for k in range(j, min(len(sp), j + look)):
+                u = match_at(k, n)
+                if u:
+                    hit = (k, u)
+                    break
+            if not hit:
+                ok = False
+                break
+            span[1] = sp[hit[0] + hit[1] - 1][1]
+            j = hit[0] + hit[1]
+        if ok:
+            return tuple(span)
+    # the whole phrase is not there in order: land on its first word rather than nowhere
+    return first_only
+
+
 def cue_time(cue, ctx, t0, t1, edge="start"):
-    """A cue as seconds: a number is a time; a string is a spoken word searched in [t0, t1]
-    (its start, or its END for things that should land after the word, like a stamp)."""
+    """A cue as seconds: a number is a time; a string is a spoken word (or phrase) searched
+    over the WHOLE window [t0, t1] (find_phrase) — its start, or its END for things that
+    should land after the word, like a stamp."""
     if cue is None:
         return None
     if isinstance(cue, (int, float)):
         return float(cue)
-    toks = str(cue).split()
-    t, m = sync(toks, ctx, t0, t1)
-    if not m:
+    span = find_phrase(str(cue).split(), ctx, t0, t1)
+    if not span:
         print(f"  moments: ! cue word {cue!r} not spoken between {t0:.2f} and {t1:.2f}s — "
               f"falling back to the window")
         return None
-    return t[0][0] if edge == "start" else t[-1][1]
+    return span[0] if edge == "start" else span[1]
+
+
+def selftest():
+    """Negative + positive tests for the cue search — `moments.py selftest`, exit 1 on a
+    failure. The bug it guards: a cue word late in a long window was "not spoken"."""
+    words = [[i * 0.4, i * 0.4 + 0.3, w] for i, w in enumerate(
+        "אז היום אני רוצה לספר לכם על משהו שקרה לי השבוע כשניסיתי לבנות אתר עם "
+        "כלי חדש ובסוף זה עבד בפייסבוק וגם ובאינסטגרם בלי לשלם שקל אחד חינם".split())]
+    ctx = {"words": words}
+    fails = []
+
+    def expect(cond, what):
+        print(f"  {'✓' if cond else '✗'} {what}")
+        if not cond:
+            fails.append(what)
+
+    i20 = 20                                   # "בפייסבוק" is word 20 of the window
+    expect(words[i20][2] == "בפייסבוק", "fixture: the cue sits at word 20")
+    t = cue_time("פייסבוק", ctx, 0.0, 12.0)
+    expect(t is not None and abs(t - words[i20][0]) < 1e-6,
+           f"cue at word 20 is found, prefix-tolerant (ב+פייסבוק) → {t}")
+    t = cue_time("חינם", ctx, 0.0, 12.0, edge="end")
+    expect(t is not None and abs(t - words[-1][1]) < 1e-6, f"last word, edge=end → {t}")
+    t = cue_time("אינסטגרם בלי", ctx, 0.0, 12.0)
+    expect(t is not None and abs(t - words[22][0]) < 1e-6,
+           f"two-word phrase late in the window (ו+ב+אינסטגרם, word 22) → {t}")
+    t = cue_time("טיקטוק", ctx, 0.0, 12.0)
+    expect(t is None, "a word that is not spoken is still reported as not spoken")
+    t = cue_time("אתר", ctx, 6.0, 12.0)
+    expect(t is None, "a word spoken BEFORE the window is not taken")
+    w2 = words + [[12.4, 12.7, "בפייסבוק"]]
+    t = cue_time("פייסבוק", {"words": w2}, 7.0, 13.0)
+    expect(t is not None and abs(t - words[i20][0]) < 1e-6,
+           "two occurrences: the nearest after the window start wins")
+    print(f"  {'all passed' if not fails else str(len(fails)) + ' FAILED'}")
+    return 1 if fails else 0
 
 
 # ------------------------------------------------------------------- text width
@@ -1512,7 +1605,7 @@ def contact_sheet(mp4, out, a, b, step, fontfile=None, cols=8, w=216):
 # ---------------------------------------------------------------------------- cli
 def main():
     ap = hfcfg.arg_parser(__doc__)
-    ap.add_argument("cmd", choices=["list", "preview"])
+    ap.add_argument("cmd", choices=["list", "preview", "selftest"])
     ap.add_argument("type", nargs="?", choices=TYPES)
     ap.add_argument("--entry", help="the moment as JSON (times in A-roll seconds)")
     ap.add_argument("--media", default=None, help="take the moment from media.json …")
@@ -1525,6 +1618,8 @@ def main():
                     help="with --render: a contact sheet every N s across the moment")
     ap.add_argument("--no-captions", action="store_true")
     a = ap.parse_args()
+    if a.cmd == "selftest":
+        return selftest()
     if a.cmd == "list":
         for t in TYPES:
             print(f"\n{t}")

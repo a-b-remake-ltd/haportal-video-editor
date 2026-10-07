@@ -177,8 +177,15 @@ EXAMPLE = {
              "duration": 0.62, "volume": 0.6}
         ]
     },
+    "_comment_flares": "full-frame, screen-blended. Optional per flare: x / y (px offset of "
+                       "its centre from the frame centre), scale (1 = full frame), rotation "
+                       "(deg), opacity (0-1) — set once; \"drift\": {x, y, scale, rotation} "
+                       "deltas reached at the flare's end, linear",
     "flares": [{"id": "flare1", "src": "assets/flares/flare1_v.mp4", "start": 14.88,
-                "duration": 1.20}],
+                "duration": 1.20},
+               {"id": "flare2", "src": "assets/flares/flare2_v.mp4", "start": 21.40,
+                "duration": 1.00, "x": 260, "y": -540, "scale": 0.7, "rotation": -18,
+                "opacity": 0.85, "drift": {"x": -60, "rotation": 6}}],
     "_comment_captions": "'external' = composited outside the renderer by caption_layer.py "
                          "(the fix for caption ghosting). 'inline' = emitted here as clips.",
     "captions": "external",
@@ -191,6 +198,84 @@ EXAMPLE = {
                       "the user's yes: \"outro\": {\"style\": \"portal|line|impact\", "
                       "\"tagline\": \"...\", \"handle\": \"@name\"}. See references/outro.md"
 }
+
+
+FLARE_KEYS = {"x": (-2000.0, 2000.0), "y": (-2000.0, 2000.0), "scale": (0.05, 6.0),
+              "rotation": (-360.0, 360.0), "opacity": (0.0, 1.0)}
+
+
+def flare_placement(f, start, dur):
+    """Where a media.json flare sits: (inline style attr, tl.set lines, drift lines).
+
+      x, y      px, the flare's centre offset from the frame centre (+x right, +y down)
+      scale     1 = full frame (the flare file's own framing); 0.5 = half size
+      rotation  degrees, clockwise, about the flare's centre
+      opacity   0-1, on top of the clip's own fade (screen blend: lower = subtler)
+      drift     optional {x, y, scale, rotation} DELTAS reached at the flare's end,
+                linear — a slow lens move. Without it nothing moves.
+
+    WHY: every flare used to sit full-frame and centred, so one stock flare looked the same
+    on every reel and could not be put where the light source is (a window, a lamp) or
+    kept off the face. Bad values stop the build instead of rendering something odd."""
+    fid = f.get("id", "?")
+    v = {}
+    for k, (lo, hi) in FLARE_KEYS.items():
+        if f.get(k) is None:
+            continue
+        try:
+            x = float(f[k])
+        except (TypeError, ValueError):
+            raise SystemExit(f"flare {fid}: {k} = {f[k]!r} is not a number")
+        if not lo <= x <= hi:
+            raise SystemExit(f"flare {fid}: {k} = {x} outside {lo:g}..{hi:g}")
+        v[k] = x
+    drift = f.get("drift")
+    if drift is not None and not isinstance(drift, dict):
+        raise SystemExit(f"flare {fid}: drift must be an object like "
+                         f'{{"x": 40, "y": -20, "scale": 0.1, "rotation": 6}}')
+    dv = {}
+    for k in ("x", "y", "scale", "rotation"):
+        if (drift or {}).get(k) is not None:
+            try:
+                dv[k] = float(drift[k])
+            except (TypeError, ValueError):
+                raise SystemExit(f"flare {fid}: drift.{k} = {drift[k]!r} is not a number")
+    bad = set(drift or {}) - {"x", "y", "scale", "rotation"}
+    if bad:
+        raise SystemExit(f"flare {fid}: drift keys {sorted(bad)} — use x, y, scale, rotation")
+    unknown = set(f) - set(FLARE_KEYS) - {"id", "src", "start", "duration", "drift"} - \
+        {k for k in f if str(k).startswith("_")}
+    if unknown:
+        # loud, not fatal: an older media.json may carry its own notes on a flare, but a
+        # typo ("rot") would otherwise leave the flare centred without a word
+        print(f"  ! flare {fid}: ignoring unknown key(s) {sorted(unknown)} — placement "
+              f"keys are {', '.join(FLARE_KEYS)} and drift")
+    x, y = v.get("x", 0.0), v.get("y", 0.0)
+    sc, rot = v.get("scale", 1.0), v.get("rotation", 0.0)
+    num = lambda n: (str(int(n)) if float(n) == int(n) else repr(round(float(n), 3)))
+    style, set_js, drift_js = "", [], []
+    op = v.get("opacity")
+    if not dv:
+        css = []
+        if (x, y, sc, rot) != (0.0, 0.0, 1.0, 0.0):
+            css.append(f"transform: translate({num(x)}px, {num(y)}px) rotate({num(rot)}deg) "
+                       f"scale({num(sc)}); transform-origin: 50% 50%")
+        if op is not None:
+            css.append(f"opacity: {num(op)}")
+        if css:
+            style = f' style="{"; ".join(css)};"'
+        return style, set_js, drift_js
+    if op is not None:
+        style = f' style="opacity: {num(op)};"'
+    a = {"x": x, "y": y, "scale": sc, "rotation": rot}
+    b = {k: a[k] + dv.get(k, 0.0) for k in a}
+    if b["scale"] <= 0:
+        raise SystemExit(f"flare {fid}: scale + drift.scale = {b['scale']:g} — must stay > 0")
+    js = lambda d: ", ".join(f"{k}: {num(d[k])}" for k in ("x", "y", "scale", "rotation"))
+    set_js.append(f'      tl.set("#{fid}", {{ {js(a)}, transformOrigin: "50% 50%" }}, 0);')
+    drift_js.append(f'      tl.fromTo("#{fid}", {{ {js(a)} }}, {{ {js(b)}, duration: {num(dur)}, '
+                    f'ease: "none", immediateRender: false }}, {num(start)});')
+    return style, set_js, drift_js
 
 
 def ensure_project_assets(media):
@@ -429,9 +514,17 @@ def build(cfg, media, bounds, end):
         hide.feed(splan["hide"], "scenes")
 
     # ----------------------------------------------------------------- flares
+    # A flare is a full-frame screen-blended clip; x / y / scale / rotation / opacity place
+    # it (flare_placement). Static placement is ONE inline CSS transform — no timeline
+    # entry, nothing to drift on a seek. Only "drift" puts the flare on the timeline, and
+    # then the start state is a tl.set instead (a CSS transform on an element GSAP tweens
+    # is the gsap_css_transform_conflict lint: GSAP would parse it and fight it).
     for f in media.get("flares", []):
-        body.append(clip("video", f["id"], "flare", float(f["start"]), float(f["duration"]),
-                         "flare", f' src="{f["src"]}" muted playsinline'))
+        fs, fd = float(f["start"]), float(f["duration"])
+        style, set_js, drift_js = flare_placement(f, fs, fd)
+        body.append(clip("video", f["id"], "flare", fs, fd, "flare",
+                         f' src="{f["src"]}" muted playsinline{style}'))
+        tl.extend(set_js + drift_js)
 
     # ------------------------------------------------------------------ audio
     audio = media.get("audio", {})
