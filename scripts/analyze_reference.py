@@ -21,7 +21,9 @@ Measured
                  within --min-gap (0.30 s). Shot-length stats, cuts per 30 s, first cut.
   loudness       ebur128 integrated LUFS, LRA, true peak
   sound          Demucs two-stem split (never judge "no music" from pause levels), then
-                 voice vs music RMS per 0.5 s, the resting bed level under the voice,
+                 the bed level under the voice as K-WEIGHTED momentary loudness (BS.1770,
+                 ffmpeg ebur128) per stem over speech — plain RMS reported beside it, never
+                 used (bass-dominated: it read a bed under the voice as louder than it),
                  swells / drops, the music stem's spectral balance, transient peaks on
                  the no-vocals stem (SFX candidates) and how many cuts carry one
   look           palettegen palette ranked by pixel share, brightness / saturation,
@@ -252,6 +254,90 @@ def run_demucs(audio_wav, stems_dir):
     return want
 
 
+# ------------------------------------------------- K-weighted (perceived) loudness
+#
+# WHY. "How far under the voice does the music sit" was measured as plain RMS of the two
+# Demucs stems. A music bed's RMS is dominated by its bass — on real references 70-85 % of
+# the no-vocals stem's energy is under 80 Hz — while the voice's energy is at 250 Hz-2 kHz,
+# where the ear is most sensitive. So RMS over-reads the music: on a talking-head reel
+# whose bed is clearly under the voice it came out NEGATIVE ("music 2.4 dB louder than the
+# voice") and apply_style refused the value. The fix is the measure loudness meters use:
+# ITU-R BS.1770 K-weighting (a high shelf around 1.5 kHz + a high-pass below ~60 Hz), as
+# ffmpeg's ebur128 computes it, as MOMENTARY loudness (400 ms window, every 100 ms) per
+# stem, compared over the windows where the voice is speaking. RMS is still reported
+# next to it so the two can be compared; the K-weighted number is the one that is used.
+KSTEP = 0.1                      # ebur128 momentary loudness is reported every 100 ms
+KFLOOR = -70.0                   # silence floor (ebur128's absolute gate)
+
+
+def _pct(xs, q):
+    """Percentile with linear interpolation, stdlib (q in 0-100)."""
+    s = sorted(xs)
+    if not s:
+        return None
+    k = (len(s) - 1) * q / 100.0
+    f = int(math.floor(k))
+    c = min(f + 1, len(s) - 1)
+    return s[f] + (s[c] - s[f]) * (k - f)
+
+
+def kloud(path):
+    """Momentary K-weighted loudness (LUFS) every 100 ms, floored at -70. Stdlib + ffmpeg."""
+    p = hfcfg.run(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-vn",
+                   "-af", "ebur128", "-f", "null", "-"])
+    out = []
+    for m in re.finditer(r"t:\s*[\d.]+\s+TARGET:.*?M:\s*(-?[\d.]+|-inf|nan)", p.stderr or ""):
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            v = KFLOOR
+        out.append(max(KFLOOR, v if v == v else KFLOOR))
+    return out
+
+
+def under_voice_lufs(V, M):
+    """Music-under-voice from the momentary loudness of the vocals (V) and no-vocals (M)
+    stems. Speech-active = the voice within 12 LU of its own loud end (95th percentile) and
+    above -50 LUFS; a swell = the music's 1.5 s average 4 LU or more over its median during
+    speech, left out of the "rest" figure (the bed level an edit is built on)."""
+    n = min(len(V), len(M))
+    V, M = V[:n], M[:n]
+    if n < 10:
+        return None
+    thr = max(-50.0, _pct(V, 95) - 12.0)
+    act = [v > thr for v in V]
+    if sum(act) < 5:
+        return None
+    under = [V[i] - M[i] for i in range(n)]
+    m_sp = statistics.median([M[i] for i in range(n) if act[i]])
+    half = 7                                           # 15 x 100 ms = 1.5 s
+    sm = [statistics.mean(M[max(0, i - half):i + half + 1]) for i in range(n)]
+    rest = [act[i] and sm[i] - m_sp < 4.0 for i in range(n)]
+    if sum(rest) < 5:
+        rest = act
+
+    def med(mask):
+        xs = [under[i] for i in range(n) if mask[i]]
+        return r(statistics.median(xs), 1) if xs else None
+    third = [[rest[i] and i * 3 // n == k for i in range(n)] for k in range(3)]
+    hook = [act[i] and i * KSTEP < 3.0 for i in range(n)]
+    ua = [under[i] for i in range(n) if act[i]]
+    return {
+        "lufs_method": "ITU-R BS.1770 K-weighted momentary loudness (ffmpeg ebur128, 400 ms "
+                       "every 100 ms) per stem, compared over speech-active windows",
+        "voice_lufs_speech": r(statistics.median([V[i] for i in range(n) if act[i]]), 1),
+        "music_lufs_speech": r(m_sp, 1),
+        "music_lufs_pauses": r(statistics.median([M[i] for i in range(n) if not act[i]]), 1)
+        if not all(act) else None,
+        "music_db_under_voice_rest": med(rest),
+        "music_db_under_voice_median": med(act),
+        "music_db_under_voice_p25_p75": [r(_pct(ua, 25), 1), r(_pct(ua, 75), 1)],
+        "music_db_under_voice_hook_0_3s": med(hook) if any(hook) else None,
+        "music_db_under_voice_by_third": [med(t) if any(t) else None for t in third],
+        "speech_share": r(sum(act) / float(n), 2),
+    }
+
+
 def spectral_balance(x):
     if np is None or len(x) < SR:
         return None
@@ -310,20 +396,31 @@ def sound(path, out_dir, use_stems, cuts):
     if not os.path.exists(wav):
         hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-ac", "2", "-ar", "44100", wav])
     stems = run_demucs(wav, work) if use_stems else None
-    if np is None:
-        res["method"] = "skipped — numpy missing (pip install numpy)"
-        return res, None
-    step = 0.5
     if not stems:
-        mix = env_db(pcm(wav), step)
         res.update({
             "method": "mix only (no stems)",
             "music_present": None,
             "warning": "NOT measured. Never conclude 'no music' from pause levels — rerun "
                        "without --no-stems (Demucs) before deciding anything about music.",
-            "mix_rms_db_median": r(np.median(mix), 1),
         })
+        if np is not None:
+            res["mix_rms_db_median"] = r(np.median(env_db(pcm(wav), 0.5)), 1)
         return res, None
+    # the number that is USED: K-weighted loudness per stem (stdlib + ffmpeg, no numpy)
+    lu = under_voice_lufs(kloud(stems[0]), kloud(stems[1]))
+    if np is None:
+        if not lu:
+            res["method"] = "stems split, but too little speech to compare — music NOT measured"
+            res["music_present"] = None
+            return res, None
+        res.update(lu)
+        res["method"] = "demucs two-stem; music under voice = " + lu["lufs_method"]
+        res["music_present"] = bool(lu["music_lufs_speech"] > -50
+                                    and lu["music_db_under_voice_median"] < 30)
+        res["rms"] = "skipped — numpy missing (swells, drops, spectrum, transients too)"
+        res.update(_lufs_gate(res))
+        return res, None
+    step = 0.5
     v, m = pcm(stems[0]), pcm(stems[1])
     V, M = env_db(v, step), env_db(m, step)
     n = min(len(V), len(M))
@@ -342,12 +439,11 @@ def sound(path, out_dir, use_stems, cuts):
     hook = np.arange(n) * step < 3.0
     under_rest = float(np.median(under[rest])) if rest.any() else float(np.median(under[act]))
     present = bool(music_med > -50 and np.median(under[act]) < 30)
-    res.update({
-        "method": "demucs htdemucs two-stem (vocals / no_vocals), RMS per 0.5 s",
+    rms = {
+        "method": "plain RMS per 0.5 s (bass-dominated: kept for comparison, NOT used)",
         "voice_rms_db_speech": r(np.median(V[act]), 1),
         "music_rms_db_speech": r(music_med, 1),
         "music_rms_db_pauses": r(np.median(M[~act]), 1) if (~act).any() else None,
-        "music_present": present,
         "music_db_under_voice_rest": r(under_rest, 1),
         "music_db_under_voice_median": r(np.median(under[act]), 1),
         "music_db_under_voice_p25_p75": [r(np.percentile(under[act], 25), 1),
@@ -356,19 +452,61 @@ def sound(path, out_dir, use_stems, cuts):
         "music_db_under_voice_by_third": [
             r(np.median(under[rest & (np.arange(n) * 3 // n == k)]), 1)
             if (rest & (np.arange(n) * 3 // n == k)).any() else None for k in range(3)],
+    }
+    res.update({
+        "method": "demucs htdemucs two-stem (vocals / no_vocals); music under voice = "
+                  "K-weighted momentary loudness (BS.1770) over speech; swells/drops on "
+                  "RMS per 0.5 s",
+        "music_present": present,
+        # legacy RMS names stay readable at the top level under explicit *_rms_* keys
+        "voice_rms_db_speech": rms["voice_rms_db_speech"],
+        "music_rms_db_speech": rms["music_rms_db_speech"],
+        "music_rms_db_pauses": rms["music_rms_db_pauses"],
         "music_swells": ranges(swell, step, 1.0, rel) if present else [],
         "music_drops": ranges(drop, step, 1.0, rel) if present else [],
         "music_spectral_share": spectral_balance(m) if present else None,
         "speech_share": r(act.mean(), 2),
         "first_voice_s": None,
         "transients_no_vocals": transients(m, cuts),
+        "rms": rms,
     })
+    if lu:
+        res.update(lu)
+    else:                                  # too little speech for the K-weighted compare
+        for k in ("music_db_under_voice_rest", "music_db_under_voice_median",
+                  "music_db_under_voice_p25_p75", "music_db_under_voice_hook_0_3s",
+                  "music_db_under_voice_by_third"):
+            res[k] = rms[k]
+        res["lufs_warning"] = "K-weighted compare impossible (too little speech) — RMS used"
+    res.update(_lufs_gate(res))
     fine = env_db(v, 0.02)
     thr = float(np.median(V[act])) - 15
     idx = np.where(fine > thr)[0]
     res["first_voice_s"] = r(idx[0] * 0.02) if len(idx) else None
     series = {"step_s": step, "voice_db": [r(x, 1) for x in V], "music_db": [r(x, 1) for x in M]}
     return res, series
+
+
+def _lufs_gate(res):
+    """Warnings the draft and the report carry. A bed under 6 dB is a music-FORWARD
+    reference (or a bad split): apply_style clamps it to its 6 dB floor, and that must be
+    said, not discovered. RMS reading 6+ dB lower than K-weighted = a bass-heavy bed."""
+    out, warn = {}, []
+    v = res.get("music_db_under_voice_rest")
+    if res.get("music_present") and v is not None and v < 6:
+        warn.append(f"the bed sits only {v} dB under the voice (K-weighted): a music-forward "
+                    f"reference. apply_style clamps audio.music_db_under_voice to its 6 dB "
+                    f"floor so the words stay intelligible — LISTEN to stems/no_vocals.wav and "
+                    f"say in STYLE.md whether you keep the clamp or lock a value by hand")
+    rms = res.get("rms") if isinstance(res.get("rms"), dict) else {}
+    rv = rms.get("music_db_under_voice_rest")
+    if v is not None and rv is not None and v - rv >= 6:
+        warn.append(f"plain RMS says {rv} dB, K-weighted says {v} dB: the music stem is "
+                    f"bass-heavy, and RMS over-reads bass the ear (and a phone speaker) barely "
+                    f"hears — the K-weighted number is the one used")
+    if warn:
+        out["music_level_warnings"] = warn
+    return out
 
 
 # ======================================================================= frames
@@ -974,12 +1112,22 @@ def report(name, src, a, made, out_dir):
     else:
         w(f"- Method: {snd['method']}.")
         w(f"- Music present: **{'yes' if snd['music_present'] else 'no'}** "
-          f"(music stem {snd['music_rms_db_speech']} dB RMS during speech, "
-          f"{snd['music_rms_db_pauses']} dB in pauses; voice {snd['voice_rms_db_speech']} dB).")
-        w(f"- Bed sits **{snd['music_db_under_voice_rest']} dB under the voice** at rest "
-          f"(swells excluded); median over all speech {snd['music_db_under_voice_median']} dB, "
+          f"(music stem {snd.get('music_lufs_speech')} LUFS during speech, "
+          f"{snd.get('music_lufs_pauses')} LUFS in pauses; voice {snd.get('voice_lufs_speech')} "
+          f"LUFS — K-weighted momentary loudness).")
+        w(f"- Bed sits **{snd['music_db_under_voice_rest']} dB under the voice** at rest, "
+          f"K-weighted (swells excluded) — the value for `audio.music_db_under_voice`; median "
+          f"over all speech {snd['music_db_under_voice_median']} dB, "
           f"IQR {snd['music_db_under_voice_p25_p75']}; at rest by thirds of the video "
           f"{snd['music_db_under_voice_by_third']}.")
+        rms = snd.get("rms") if isinstance(snd.get("rms"), dict) else None
+        if rms:
+            w(f"- For comparison, plain RMS (bass-dominated, NOT used): "
+              f"{rms['music_db_under_voice_rest']} dB at rest, median "
+              f"{rms['music_db_under_voice_median']} dB (music {rms['music_rms_db_speech']} dB "
+              f"RMS, voice {rms['voice_rms_db_speech']} dB).")
+        for x in snd.get("music_level_warnings") or []:
+            w(f"- **WARNING [M]:** {x}.")
         w(f"- Swells (≥ +4 dB over the bed): {fmt_ranges(snd['music_swells'])}.")
         w(f"- Drops (≤ −6 dB): {fmt_ranges(snd['music_drops'])}.")
         if snd.get("music_spectral_share"):
@@ -1062,6 +1210,8 @@ def draft_from(a):
                   if snd.get("music_present") else None,
                   "music_character": None},
     }
+    if snd.get("music_level_warnings"):
+        d["audio"]["_measured"] = snd["music_level_warnings"]
     return d
 
 
@@ -1091,8 +1241,13 @@ def analyse(src, out_dir, args):
             jdump(series, os.path.join(out_dir, "audio_series.json"))
         s = a["sound"]
         if s.get("music_present") is not None:
+            rr = (s.get("rms") or {}).get("music_db_under_voice_rest") \
+                if isinstance(s.get("rms"), dict) else None
             log(f"  sound: music {'present' if s['music_present'] else 'absent'}, "
-                f"{s['music_db_under_voice_rest']} dB under voice at rest")
+                f"{s['music_db_under_voice_rest']} dB under voice at rest (K-weighted"
+                + (f"; plain RMS {rr} dB" if rr is not None else "") + ")")
+            for x in s.get("music_level_warnings") or []:
+                log(f"  ! {x}")
     else:
         a["sound"] = {"method": "no audio stream"}
     fr = decode_lowres(src, info) if np is not None else None
@@ -1210,6 +1365,10 @@ def main():
                 sec, fld = path.split(".")
                 draft[sec][fld] = int(m[key]) if fld == "center_y" else m[key]
         log(f"\n  combined.json: {len(comb['disagree'])} field(s) disagree across references")
+    warns = [f"{nm}: {x}" for nm, an in zip(names, analyses)
+             for x in (an.get("sound") or {}).get("music_level_warnings") or []]
+    if warns and len(analyses) > 1:
+        draft["audio"]["_measured"] = warns
     draft["meta"]["references"] = names
     jdump(draft, os.path.join(args.out, "style.draft.json"), indent=2)
     log(f"\nnext: READ the images listed in {args.out}/<ref>/REPORT.md §0, fill the TODOs, write "

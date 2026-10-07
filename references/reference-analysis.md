@@ -43,7 +43,7 @@ and `style/combined.json` when there are several references.
 | Measure | Method | Trust | On the Rollin reference (doc vs script) |
 |---|---|---|---|
 | Cuts, shot lengths | scdet score ≥ 8, merged within 0.30 s | High for hard cuts; dissolves land in `soft` | 29 cuts / 12.1 per 30 s / median 1.6 s: **exact** |
-| Music under voice | Demucs stems, median (voice − music) over speech, swells excluded | High | doc 12–14 dB; script 11.5 at rest, by thirds 9.8 / **13.2** / 9.6 (the doc read the middle) |
+| Music under voice | Demucs stems, **K-weighted** momentary loudness (BS.1770, ffmpeg `ebur128`) per stem, median (voice − music) over speech, swells excluded. Plain RMS is printed beside it, never used | High | doc 12–14 dB; script **12.3** at rest, by thirds 12.3 / 14.3 / 10.5 (plain RMS read 11.5) |
 | Swells / drops | music stem vs its own median, 1.5 s smoothing | High | hook swell, the 34–38 s drop before the punchline, 41 s and 62 s swells: all found |
 | SFX / transients | onsets on the no-vocals stem, periodic runs removed | **Upper bound**: strong music hits count too | every SFX the doc lists is in the list, plus music hits |
 | Caption centre | rows where bright, edge-dense pixels keep CHANGING | High when confidence is high; read `caption_band.png` anyway | doc 65.5 %; script 65.4 % |
@@ -129,7 +129,7 @@ and listed in `_todo`. Fill every field, delete `_todo` and `_about`, save as
 | `style.sfx_per_min` | §7 | your count of the real SFX (the measured number is an upper bound) |
 | `style.notes` | anything | list of short rules the build should honour |
 | `style.palette` | §8 | hex list, verified on the graphic frames |
-| `audio.music_db_under_voice` | §7, `music_db_under_voice_rest` | positive dB |
+| `audio.music_db_under_voice` | §7, `music_db_under_voice_rest` (K-weighted) | positive dB, 6–30. Below 6 is clamped to 6 with a note (below) |
 | `audio.music_character` | §7 | genre, pulse, melodic or bed, how it moves with the story |
 
 Then:
@@ -179,6 +179,30 @@ uvx --from demucs --with soundfile demucs --two-stems=vocals -o <dir> <audio>
 `analyze_reference.py` does this by default. With `--no-stems`, or if the split failed, the
 report says **NOT measured**. Treat that as unknown, rerun with stems, and never write "no
 music" in STYLE.md.
+
+### Why the music level is K-weighted, and what a low number means
+
+A music bed's energy sits in the bass (70–85 % of the no-vocals stem under 80 Hz on real
+references); the voice sits at 250 Hz–2 kHz, where the ear is most sensitive. Plain RMS
+therefore over-reads the music: on one talking-head reference it said the bed was 2.4 dB
+LOUDER than the voice, and that negative number broke the style application. The script
+now compares the stems the way a loudness meter hears them (ITU-R BS.1770 K-weighting,
+400 ms momentary windows every 100 ms, over the windows where the voice speaks). Both
+numbers are in `analysis.json` (`sound.music_db_under_voice_*` = K-weighted,
+`sound.rms.*` = plain RMS) and in REPORT.md §7.
+
+A K-weighted value **under 6 dB** is real: a music-forward reference whose bed is about as
+loud as the voice (one such reference measures −0.1 dB K-weighted, the music level steady
+in the pauses too, so it is not voice bleeding into the stem). The script prints a
+WARNING, the draft carries it under `audio._measured`, and `apply_style.py` clamps the
+value to its 6 dB floor with a note, so the words stay intelligible. Listen to
+`stems/no_vocals.wav`, then say in STYLE.md whether you keep the clamp. To keep a louder bed
+on purpose, set `audio.music_db_under_voice` in `config.json` by hand and `--lock` it.
+
+`apply_style.py` never drops a whole style over one value: out of range is clamped and
+noted, a number written with its unit (`"12 dB"`) is read, and a value that is not a
+number at all is skipped with everything else applied (`--strict` writes nothing instead).
+`python3 scripts/apply_style.py selftest` runs the negative tests.
 
 ---
 

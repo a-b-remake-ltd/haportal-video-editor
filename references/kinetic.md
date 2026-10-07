@@ -52,7 +52,9 @@ the text, do not silence it.
 | `start`, `end` | found in the transcript | the window. Without `start` the phrase is searched in the whole transcript (said twice → warned, give `start`). Without `end` it holds to the end of the sentence (below) |
 | `style` | `style.kinetic` if it names one, else `rollin` | `rollin`, `ko` or `bold` (below) |
 | `on` | `footage` | `paper` = ink + `--hl-on-light`, no shadow, no scrim, for a light surface underneath |
-| `place` | `chest` | `chest`, `upper`, `center`; or `top: px` |
+| `place` | `chest` (`upper` with `behind`) | `chest`, `upper`, `center`; or `top: px` |
+| `behind` | `false` | `true` = the words sit BETWEEN the wall and the person (below) |
+| `matte` | `assets/matte_<id>.webm` | the person matte `behind` needs |
 | `size` | per style | nominal px of a full line at 1080 wide; the fit only ever shrinks it |
 | `font` | `brand` | `display` = `var(--display-font)`. Only if that face has a thin AND a bold weight |
 | `hide_captions` | `true` | `false` keeps the captions on, and the stack is lifted above the caption plate |
@@ -111,10 +113,26 @@ frame the word is already ~30 % in, which reads as the same faint entry. Exit is
 - **Size is measured, not guessed.** Every line is measured in headless Chrome in the real
   face and weights, and the font shrinks until the widest line fits the 860 px between x 60
   and x 920. Under ~64 px the build tells you to break the line instead.
-- **`chest` is face-aware.** KO's top 980 assumed wide framing. On a close selfie the chin
-  sits lower, so the face is measured on the A-roll inside the window (the outro's skin
-  mask) and the stack drops under the chin plus 36 px. If it cannot fit there it goes above
-  the head when that is clear. Otherwise the build warns.
+- **`chest` hangs under the measured chin.** KO's top 980 assumed wide framing; on a close
+  selfie the chin sits lower. Run `python3 scripts/framing_map.py assets/aroll.mp4` first:
+  with `build/framing.json` present, the stack's top = the chin + 36 px. The chin used is
+  the LOWEST credible one: the p80 of the per-frame chins (the head nods) and the face
+  centre + 1.0 face widths (a beard hides the jaw from the skin mask; on two real bearded
+  takes the measured chin sat 50-100 px above the beard's bottom), capped at the collar
+  when the chest band was found. Every number is sanity-checked first: a chin misread in a
+  frame (a hand or a microphone read as the collar), an upside-down chest band or an
+  implausible face is named and ignored, and a `framing.json` older than the A-roll is
+  flagged. Without the file the face is measured on the A-roll inside the window (the
+  outro's skin mask), and a misread there (a landscape 4K source) falls back to y 980 with a
+  warning. `kinetic.py plan` prints which source placed each headline.
+- **The punch-in moves the chin.** The A-roll scales about 50% 30% (beat scale 1.02 times
+  any `punch` step). The chin is mapped through the LARGEST scale active in the headline's
+  window, so a 1.14 punch (≈ +75 px at the chin) cannot drop the beard onto a stack placed
+  for scale 1. If the stack then has no room under the chin it goes above the head when
+  that is clear, else the build warns.
+- **The build warns whenever the stack still overlaps the face box** (head top to chin,
+  face centre ± 0.62 face widths, on screen, at the window's scale). Fix it with fewer
+  lines, a smaller `size`, `place: upper`, or `top`.
 - **Never over the caption band unless the captions are hidden.** With `hide_captions: false`
   the stack is lifted above the caption plate, and the build warns if that puts it on the face.
 - **Readability is measured.** The reference look is thin white type with only a soft
@@ -123,6 +141,40 @@ frame the word is already ~30 % in, which reads as the same faint entry. Exit is
   goes behind the type: no box, no edge. Set `"scrim": false` to refuse it, `true` to force it.
 - `grid.py check` covers every word. Tight leading makes the font boxes overlap (the glyphs
   do not), so rollin/bold words carry `data-layout-allow-overlap` for `hyperframes check`.
+
+## Behind the speaker (`"behind": true`)
+
+The Rollin look outside the hook: big words between the wall and the person, the head
+passing in front of them. The headline goes under the speaker's matte of exactly its
+window: `#aroll` (z 20) < the words (z 24) < the matte video (z 26, same box and
+`transform-origin: 50% 30%` as the A-roll, and every beat / punch scale mirrored by
+`tl.set`). Videos end inclusive and divs exclusive, so the matte runs `end − 1 frame`, as
+in the hook.
+
+```json
+{"id": "h4", "text": "בא לי / *לעקוב* / אחריו", "style": "bold", "size": "huge", "behind": true}
+```
+
+It needs a person matte of the window. When it is missing the build stops and prints the
+exact commands, for example:
+
+```bash
+mkdir -p build && ffmpeg -v error -y -ss 30.000 -i assets/aroll.mp4 -t 2.400 -an \
+  -vf scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920 \
+  -c:v libx264 -crf 12 -pix_fmt yuv420p build/span_h4.mp4
+python3 scripts/matte.py build/span_h4.mp4 assets/matte_h4.webm    # torch, ~30 s per 2.4 s on Apple silicon
+```
+
+The build also stops when the matte is not the composition's size, when its length is off
+the window by more than 2 frames (the window moved: a re-cut, a new start/end), when it is
+older than the A-roll, when the window is inside the hook (the hook has its own matte),
+on a panel beat, or while B-roll or a designed moment covers the A-roll (the matte would
+paint the speaker over them). Each message names the fix. Re-matte after every re-cut.
+
+Placement: the default is `upper`. The point is words passing BEHIND THE HEAD, not text
+buried under the torso, so the build measures how much of the stack the matte covers at
+mid-window and warns above 45 %. Then move it (`top`, fewer or shorter lines). LOOK at a
+`hyperframes snapshot` across the window: the keyword must still read.
 
 ## Captions while a headline is up
 

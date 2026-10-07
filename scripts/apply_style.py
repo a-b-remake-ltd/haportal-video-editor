@@ -33,7 +33,10 @@ style.json schema (every field optional; null = "no opinion", left untouched)
                  "kinetic": true | "rollin" | "classic" | "bold"},   (the reference builds
                                                           word-by-word headlines; a name
                                                           sets the default headline style)
-    "audio":    {"music_db_under_voice": 6-30 (positive dB), "music_character": str}
+    "audio":    {"music_db_under_voice": 6-30 (positive dB; below 6 / negative is clamped
+                                         to 6 with a note — a music-forward reference or
+                                         an RMS reading of a bass-heavy stem),
+                 "music_character": str}
   }
   Keys starting with "_" are comments. A non-empty "_todo" list refuses to apply
   (finish the analysis or pass --allow-todo).
@@ -47,7 +50,12 @@ style.json schema (every field optional; null = "no opinion", left untouched)
 Usage
   python3 scripts/apply_style.py [--style style/style.json] [--config config.json]
                                  [--dry-run] [--lock captions.style,brand.caption_size]
-                                 [--force] [--allow-todo]
+                                 [--force] [--allow-todo] [--strict]
+  python3 scripts/apply_style.py selftest      # negative tests of the clamps
+
+  An out-of-range number is CLAMPED and noted (style.notes), never a reason to drop the
+  style; a value that is not a number at all is SKIPPED with the rest applied (--strict:
+  write nothing). "12 dB" / "12" read as 12.
 """
 from __future__ import annotations
 
@@ -122,10 +130,24 @@ def v_enum(*choices):
     return f
 
 
+def as_number(v):
+    """A number, or a string that starts with one ("12", "12.5 dB", "-2.4") — a style.json
+    written by hand or by a model often carries the unit. Anything else raises."""
+    if isinstance(v, bool):
+        raise ValueError("must be a number")
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        m = re.fullmatch(r"\s*([-+−]?\d+(?:\.\d+)?)\s*(?:db|dB|DB|px|s|%)?\s*", v)
+        if m:
+            x = float(m.group(1).replace("−", "-"))
+            return int(x) if x.is_integer() and "." not in m.group(1) else x
+    raise ValueError("must be a number")
+
+
 def v_num(lo, hi, cast=float, why="", step=None):
     def f(v, ctx):
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            raise ValueError("must be a number")
+        v = as_number(v)
         x = cast(round(v / step) * step) if step else cast(v)
         y = cast(clamp(x, lo, hi))
         msg = None
@@ -135,6 +157,27 @@ def v_num(lo, hi, cast=float, why="", step=None):
             msg = f"{v} → {x} (rounded)"
         return y, msg
     return f
+
+
+def v_music_under(v, ctx):
+    """audio.music_db_under_voice: positive dB the bed sits under the voice, 6-30.
+
+    Out of range is CLAMPED with a note, never a reason to drop the whole style. Below 6 —
+    zero or negative especially — is either a music-forward reference (the bed as loud as
+    the voice) or a number measured with plain RMS, which reads a bass-heavy bed as louder
+    than the voice; either way the edit keeps the words intelligible at 6 dB, and says so."""
+    x = float(as_number(v))
+    if 6 <= x <= 30:
+        return x, None
+    y = float(clamp(x, 6, 30))
+    if x < 6:
+        why = ("music as loud as / louder than the voice" if x <= 0 else
+               "bed nearly as loud as the voice")
+        return y, (f"{v} → {y} ({why} in the reference — a music-forward mix, or an RMS "
+                   f"measurement of a bass-heavy stem; analyze_reference.py now measures "
+                   f"K-weighted. The 6 dB floor keeps every word intelligible; --lock "
+                   f"audio.music_db_under_voice with a value set by hand to override)")
+    return y, f"{v} → {y} (a bed more than 30 dB under the voice is inaudible on a phone)"
 
 
 def v_text(v, ctx):
@@ -183,7 +226,9 @@ def v_kinetic(v, ctx):
 
 def v_center_y(v, ctx):
     """The plate must sit inside the safe zone and above the bottom-card zone."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    try:
+        v = as_number(v)
+    except ValueError:
         raise ValueError("must be a number (px at 1920 high)")
     g, size = ctx["grid"], ctx["caption_size"]
     ph = grid.plate_height(size)
@@ -220,7 +265,7 @@ SPEC = {
     "style.palette": v_palette,
     "style.transitions_allowed": v_transitions,
     "style.kinetic": v_kinetic,
-    "audio.music_db_under_voice": v_num(6, 30, float, "positive dB the bed sits under the voice"),
+    "audio.music_db_under_voice": v_music_under,
     "audio.music_character": v_text,
 }
 # keys the reference may never write, with the reason
@@ -246,6 +291,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="override values set by hand in config.json (never locked ones)")
     ap.add_argument("--allow-todo", action="store_true", help="apply even if _todo is non-empty")
+    ap.add_argument("--strict", action="store_true",
+                    help="write nothing when any value is invalid (default: skip that key, "
+                         "apply the rest, and say so)")
     a = ap.parse_args()
 
     if not os.path.exists(a.style):
@@ -327,6 +375,10 @@ def main():
         n = "apply_style: clamped " + c
         if n not in notes:
             notes.append(n)
+    for e in errors:
+        n = "apply_style: skipped invalid " + e
+        if n not in notes:
+            notes.append(n)
     pal = get(new, "style.palette")
     logo = (cfg.get("brand") or {}).get("logo")
     if pal:
@@ -352,7 +404,9 @@ def main():
           f"{g['safe'][3] - g['bottom_card_max_h']}, caption plate {grid.plate_height(size)}px at size {size}")
     for title, rows, mark in (("changed", changes, "~"), ("CLAMPED", clamps, "!"),
                               ("kept (higher precedence)", kept, "="),
-                              ("ignored", ignored, "-"), ("INVALID", errors, "✗")):
+                              ("ignored", ignored, "-"),
+                              ("INVALID — skipped, config keeps its value" if not a.strict
+                               else "INVALID", errors, "✗")):
         if rows:
             print(f"\n  {title}:")
             for x in rows:
@@ -380,9 +434,14 @@ def main():
             print(f"    ? {x}")
     if not changes:
         print("\n  nothing to change")
-    if errors:
-        print("\n  fix the INVALID values in style.json and run again — nothing written")
+    if errors and a.strict:
+        print("\n  --strict: fix the INVALID values in style.json and run again — nothing written")
         return 1
+    if errors:
+        # One unreadable value must not throw away a whole analysed style (a negative
+        # music level once failed the entire application). Skip it, apply the rest, say so.
+        print(f"\n  {len(errors)} invalid value(s) SKIPPED — every other key is applied. Fix "
+              f"them in style.json and rerun (--strict refuses to write instead)")
     if a.dry_run:
         return 0
     shutil.copy(cfg_path, cfg_path + ".bak")
@@ -393,5 +452,38 @@ def main():
     return 0
 
 
+def selftest():
+    """Negative tests of the validators — `apply_style.py selftest`. Exit 1 on failure."""
+    fails = []
+
+    def expect(cond, what):
+        print(f"  {'✓' if cond else '✗'} {what}")
+        if not cond:
+            fails.append(what)
+
+    v, msg = v_music_under(-2.4, {})
+    expect(v == 6.0 and msg and "music-forward" in msg,
+           "music_db_under_voice -2.4 (an RMS reading) → clamped to 6 with a note, not rejected")
+    v, msg = v_music_under(12.3, {})
+    expect(v == 12.3 and msg is None, "12.3 dB passes untouched")
+    v, msg = v_music_under(45, {})
+    expect(v == 30.0 and msg, "45 dB → clamped to 30")
+    v, msg = v_music_under("13 dB", {})
+    expect(v == 13.0, "\"13 dB\" reads as 13")
+    try:
+        v_music_under("loud", {})
+        expect(False, "\"loud\" is rejected (then skipped, not fatal)")
+    except ValueError:
+        expect(True, "\"loud\" is rejected (then skipped, not fatal)")
+    v, msg = SPEC["captions.max_words"](7, {})
+    expect(v == 4 and msg, "captions.max_words 7 → clamped to 4")
+    v, msg = SPEC["style.median_shot_s"]("1.6", {})
+    expect(v == 1.6, "a numeric string \"1.6\" is accepted")
+    print(f"\n  {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["selftest"]:
+        sys.exit(selftest())
     sys.exit(main())

@@ -26,6 +26,22 @@ python3 scripts/brand_from_logo.py logo.svg --out brand/ --accent "#F2A93B"   # 
   weights. Clusters snap to the designer's exact hex.
 - An opaque logo (a JPG in a white box) has its background flood-filled away from the
   border and its edges un-matted, so it gets no white halo on dark footage.
+- **A logo on a card is freed from the card.** Screenshots and mock-ups often put the mark
+  on a white rounded card (on a grey canvas, with a soft drop shadow) or on a dark card on
+  white. The border flood only removes the canvas, so without this the "logo" would be a
+  white rectangle: wrong palette, rectangular silhouettes, wrong holes. A neutral (white,
+  grey or near-black) rectangle or rounded rectangle that spans the trimmed logo and holds
+  other content is removed as a second background, flooded from its own pixels with the
+  same soft edge, and everything outside it (the shadow) goes too. When the card was the
+  same colour as the canvas and left only its shadow, the soft shadow ramp is removed.
+  The note says what happened (`removed a card: #FFFFFF 83% of the area ...`) and
+  `brand.json → logo.card` records it.
+- **A badge is not a card.** A logo that IS a filled square stays: a coloured square (the
+  brand colour itself), or a square whose content is only the canvas colour (a white symbol
+  punched out of a black app icon). A disc or ring never counts as a card.
+  `--keep-card` keeps any card or shadow; `--remove-card` removes a square the tests kept.
+  Read the note and LOOK at `palette.png` either way. `python3 scripts/brand_from_logo.py
+  selftest` runs the gate's negative tests.
 - `--primary` / `--accent` override a role. Use them when the user says "our colour is X" or
   when the extraction picked the wrong one.
 

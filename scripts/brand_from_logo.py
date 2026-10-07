@@ -12,7 +12,11 @@ contrast-checked and, where needed, moved along L* (hue kept) until it passes.
 Inputs: PNG / JPG / WEBP (decoded by ffmpeg to raw RGBA — stdlib only) or SVG (colours
 parsed from the source AND rasterised by headless Chrome on a transparent background for
 pixel weights). Opaque logos (a JPG on a white box) get their background flood-filled
-away from the border, so they work like a transparent PNG.
+away from the border, so they work like a transparent PNG. A logo sitting on a CARD (a
+white rounded card on a grey canvas, a dark card on white, with or without a soft drop
+shadow) gets the card removed as a second background layer, and reported; a filled
+badge (a coloured square, or a symbol knocked out of a square) is kept. --keep-card /
+--remove-card override. `brand_from_logo.py selftest` runs the gate's negative tests.
 
 Outputs in --out (the contract the build and the outro consume):
   brand.json        logo paths/size/aspect/holes/monochrome, colour roles, palette,
@@ -236,7 +240,8 @@ def detect_background(img: Img) -> Tuple[Optional[Tuple[int, int, int]], float]:
     return bg, near / float(len(ring))
 
 
-def remove_background(img: Img, bg, tol_lo: float = 22.0, tol_hi: float = 64.0) -> Img:
+def remove_background(img: Img, bg, tol_lo: float = 22.0, tol_hi: float = 64.0,
+                      seeds=None) -> Img:
     """Flood-fill the background away FROM THE BORDER and derive a soft alpha.
 
     Connectivity matters: a white counter inside an "O" is not reached from the border, so
@@ -244,17 +249,23 @@ def remove_background(img: Img, bg, tol_lo: float = 22.0, tol_hi: float = 64.0) 
     reported as a hole and knocked out of the silhouettes. Edge pixels get a ramped alpha
     and are un-matted (the background's share removed from their colour), so the cut-out
     has no light halo on dark footage.
+
+    `seeds` (pixel indices) starts the flood somewhere other than the border — the card
+    removal floods a card away from its OWN pixels with the same soft, un-matted edge.
     """
     w, h, px = img.w, img.h, bytearray(img.px)
     lo2, hi2 = tol_lo ** 2, tol_hi ** 2
     seen = bytearray(w * h)
     dq = deque()
-    for x in range(w):
-        dq.append(x)
-        dq.append((h - 1) * w + x)
-    for y in range(h):
-        dq.append(y * w)
-        dq.append(y * w + w - 1)
+    if seeds is not None:
+        dq.extend(seeds)
+    else:
+        for x in range(w):
+            dq.append(x)
+            dq.append((h - 1) * w + x)
+        for y in range(h):
+            dq.append(y * w)
+            dq.append(y * w + w - 1)
     bgr, bgg, bgb = bg
     while dq:
         p = dq.pop()
@@ -318,6 +329,251 @@ def crop(img: Img, box) -> Img:
     for y in range(y0, y1):
         out += img.px[(y * img.w + x0) * 4:(y * img.w + x1) * 4]
     return Img(w, y1 - y0, out)
+
+
+# ======================================================== card / shadow removal
+#
+# WHY. Logos arrive as screenshots and mock-ups as often as clean files: the mark sitting on
+# a white rounded CARD (on a light-grey canvas, with a soft drop shadow), or on a dark card
+# on white. The border flood removes the canvas only. The card survives, so the "logo" is a
+# white rectangle with the mark inside: the palette is mostly card white, the silhouettes are
+# solid white/ink rectangles, the holes are wrong and the outro lands the speaker in a box.
+# A card is a SECOND background layer: removed the same way (flood from its own pixels,
+# soft un-matted edge), with everything outside it (the shadow) dropped, and reported.
+#
+# What is NOT a card: a logo that IS a filled square — an app-icon badge. Two tests keep it:
+#   * colour — a card is a neutral (white / grey / near-black) surface; a coloured square
+#     is the brand colour itself (the orange badge with a white ring);
+#   * knock-out — when everything inside the square is the canvas colour (a white symbol
+#     punched out of a black square), the symbol only exists BY the square: it is a badge.
+# `--keep-card` keeps any card; `--remove-card` removes a square the tests called a badge.
+
+CARD_TOL = 30            # px colour distance that still counts as the card's surface
+CARD_MIN_SHARE = 0.35    # the card colour covers at least this much of the trimmed area
+CARD_MIN_SPAN = 0.80     # its box spans >= 80 % of the trimmed width AND height (edge-aligned)
+CARD_MIN_SOLID = 0.88    # (card + what it encloses) / its box: a rect / rounded rect, not a disc
+CARD_KNOCKOUT = 0.85     # inside content this much canvas-coloured -> a badge, keep it
+CARD_ALPHA = 24          # a card may be faint: a gradient card the border flood half-removed
+                         # (white at alpha 46 on a real file) is still a card
+
+
+def _neutral(rgb) -> bool:
+    """A surface colour, not a brand colour: low chroma (a little more allowed when dark —
+    a near-black card is often a hair blue)."""
+    L, C, _ = ck.lab_to_lch(ck.rgb_to_lab(rgb))
+    return C <= (18.0 if L < 25 else 14.0)
+
+
+def _border_flood(w: int, h: int, wall: bytearray) -> bytearray:
+    """1 = reachable from the image border through non-wall pixels (4-connected)."""
+    out = bytearray(w * h)
+    dq = deque(p for p in list(range(w)) + list(range((h - 1) * w, h * w)) +
+               [y * w for y in range(h)] + [y * w + w - 1 for y in range(h)] if not wall[p])
+    while dq:
+        p = dq.pop()
+        if out[p]:
+            continue
+        out[p] = 1
+        x = p % w
+        for q in ((p - 1) if x > 0 else -1, (p + 1) if x < w - 1 else -1,
+                  p - w if p >= w else -1, p + w if p < (h - 1) * w else -1):
+            if q >= 0 and not wall[q] and not out[q]:
+                dq.append(q)
+    return out
+
+
+def find_card(img: Img, canvas: Optional[Tuple[int, int, int]]) -> Optional[dict]:
+    """A uniform rectangle / rounded rectangle that encloses the real logo, or None.
+
+    Returns {"rgb", "share", "pixels", "outside", "verdict": "card" | "badge", "why"}.
+    share = the card's box area (its surface + what it encloses) / the trimmed area."""
+    w, h, px = img.w, img.h, img.px
+    n = w * h
+    if n < 400:
+        return None
+    # 1. the dominant colour of the visible pixels (5-bit bins, sampled)
+    step = max(1, int(math.sqrt(n / 90000.0)))
+    cnt = Counter()
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            i = (y * w + x) * 4
+            if px[i + 3] >= CARD_ALPHA:
+                cnt[(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3)] += 1
+    if not cnt:
+        return None
+    key, c = cnt.most_common(1)[0]
+    sampled = len(range(0, h, step)) * len(range(0, w, step))
+    if c / float(sampled) < CARD_MIN_SHARE:
+        return None
+    acc = [0, 0, 0, 0]
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            i = (y * w + x) * 4
+            if px[i + 3] >= CARD_ALPHA and (px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3) == key:
+                acc[0] += px[i]
+                acc[1] += px[i + 1]
+                acc[2] += px[i + 2]
+                acc[3] += 1
+    card = tuple(int(round(acc[k] / float(acc[3]))) for k in range(3))
+    # 2. its largest 4-connected region
+    t2 = CARD_TOL ** 2
+    m = bytearray(n)
+    for p in range(n):
+        i = p * 4
+        if px[i + 3] >= CARD_ALPHA and (px[i] - card[0]) ** 2 + (px[i + 1] - card[1]) ** 2 + \
+                (px[i + 2] - card[2]) ** 2 <= t2:
+            m[p] = 1
+    seen = bytearray(n)
+    best: List[int] = []
+    for s in range(n):
+        if not m[s] or seen[s]:
+            continue
+        seen[s] = 1
+        comp, dq = [], deque([s])
+        while dq:
+            p = dq.pop()
+            comp.append(p)
+            x = p % w
+            for q in ((p - 1) if x > 0 else -1, (p + 1) if x < w - 1 else -1,
+                      p - w if p >= w else -1, p + w if p < n - w else -1):
+                if q >= 0 and m[q] and not seen[q]:
+                    seen[q] = 1
+                    dq.append(q)
+        if len(comp) > len(best):
+            best = comp
+    if len(best) < CARD_MIN_SHARE * n * 0.8:
+        return None
+    xs = [p % w for p in best]
+    ys = [p // w for p in best]
+    bx0, bx1, by0, by1 = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+    if (bx1 - bx0) < CARD_MIN_SPAN * w or (by1 - by0) < CARD_MIN_SPAN * h:
+        return None                                   # a big shape, not an enclosing surface
+    wall = bytearray(n)
+    for p in best:
+        wall[p] = 1
+    outside = _border_flood(w, h, wall)
+    box_area = (bx1 - bx0) * (by1 - by0)
+    solid = sum(1 for y in range(by0, by1) for p in range(y * w + bx0, y * w + bx1)
+                if not outside[p]) / float(box_area)
+    if solid < CARD_MIN_SOLID:
+        return None                                   # a disc / ring / blob — part of the mark
+    # 3. what it encloses: content (not card-coloured, visible) vs the canvas colour
+    ref = canvas if canvas is not None else (255, 255, 255)
+    content = knock = inside = 0
+    for p in range(n):
+        if outside[p] or wall[p]:
+            continue
+        inside += 1
+        i = p * 4
+        if px[i + 3] < 128 or m[p]:
+            continue
+        content += 1
+        if (px[i] - ref[0]) ** 2 + (px[i + 1] - ref[1]) ** 2 + (px[i + 2] - ref[2]) ** 2 <= 40 ** 2:
+            knock += 1
+    if content < max(30, 0.003 * (len(best) + inside)):
+        return None                                   # a plain rectangle: nothing to free
+    share = (len(best) + inside) / float(n)
+    rim = sum(1 for p in range(n) if outside[p] and px[p * 4 + 3] >= CARD_ALPHA)
+    res = {"rgb": card, "share": share, "pixels": best, "outside": outside,
+           "rim": rim / float(n)}
+    if not _neutral(card):
+        res.update(verdict="badge", why=f"a coloured shape ({ck.rgb_to_hex(card)}) is the brand "
+                                        f"colour itself — a badge, not a card")
+    elif knock >= CARD_KNOCKOUT * content:
+        res.update(verdict="badge", why=f"everything inside it is the canvas colour "
+                                        f"({ck.rgb_to_hex(ref)}) punched out of the shape — "
+                                        f"the symbol only exists by the square")
+    else:
+        res.update(verdict="card", why="")
+    return res
+
+
+def remove_card(img: Img, card: dict) -> Img:
+    """Flood the card away from its own pixels (soft, un-matted edge), drop everything
+    outside it (the drop shadow, a canvas rim)."""
+    out = remove_background(img, card["rgb"], seeds=card["pixels"])
+    px, outside = out.px, card["outside"]
+    for p in range(img.w * img.h):
+        if outside[p]:
+            px[p * 4 + 3] = 0
+    return out
+
+
+def find_shadow(img: Img, canvas: Optional[Tuple[int, int, int]]) -> Optional[dict]:
+    """A soft neutral drop shadow left behind once the card itself went with the canvas
+    (a white card on a white page: the flood removed both and stopped at the shadow).
+
+    A shadow is told from a grey part of the logo by being SOFT: composited back over the
+    canvas, most of its pixels are mid-tones on a ramp between its darkest value and the
+    canvas, where a glyph is one flat value with a 1-2 px anti-aliased edge. It must also be
+    the outermost thing — its box spans the trimmed image and holds the rest of the logo."""
+    w, h, px = img.w, img.h, img.px
+    n = w * h
+    bg = canvas if canvas is not None else (255, 255, 255)
+    ybg = 0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]
+    vis = bytearray(1 if px[p * 4 + 3] >= 8 else 0 for p in range(n))
+    seen = bytearray(n)
+    comps = []
+    for s in range(n):
+        if not vis[s] or seen[s]:
+            continue
+        seen[s] = 1
+        comp, dq = [], deque([s])
+        while dq:
+            p = dq.pop()
+            comp.append(p)
+            x, y = p % w, p // w
+            for dy in (-1, 0, 1):
+                yy = y + dy
+                if 0 <= yy < h:
+                    for dx in (-1, 0, 1):
+                        xx = x + dx
+                        if 0 <= xx < w:
+                            q = yy * w + xx
+                            if vis[q] and not seen[q]:
+                                seen[q] = 1
+                                dq.append(q)
+        comps.append(comp)
+    if len(comps) < 2:
+        return None
+    total = sum(len(c) for c in comps)
+    for comp in sorted(comps, key=len, reverse=True)[:4]:
+        xs = [p % w for p in comp]
+        ys = [p // w for p in comp]
+        x0, x1, y0, y1 = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+        if (x1 - x0) < 0.85 * w and (y1 - y0) < 0.85 * h:
+            continue
+        rest = total - len(comp)
+        if rest < 0.01 * total:
+            continue
+        ys_ = []
+        neutral = 0
+        for p in comp:
+            i = p * 4
+            a = px[i + 3] / 255.0
+            r, g, b = (a * px[i + k] + (1 - a) * bg[k] for k in range(3))
+            if max(r, g, b) - min(r, g, b) <= 14:
+                neutral += 1
+            ys_.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+        if neutral < 0.9 * len(comp):
+            continue
+        ys_.sort()
+        lo = ys_[int(0.02 * (len(ys_) - 1))]
+        if ybg - lo < 12:
+            continue
+        mid = sum(1 for v in ys_ if lo + 0.12 * (ybg - lo) < v < ybg - 3) / float(len(ys_))
+        if mid < 0.6:
+            continue                                  # flat: a grey glyph / frame, keep it
+        # the rest of the logo sits inside the shadow's box
+        inside = 0
+        own = set(comp)
+        for p in range(n):
+            if vis[p] and p not in own and x0 <= p % w < x1 and y0 <= p // w < y1:
+                inside += 1
+        if inside < 0.95 * rest:
+            continue
+        return {"pixels": comp, "share": len(comp) / float(n), "mid": mid}
+    return None
 
 
 # =================================================================== analysis
@@ -1141,6 +1397,190 @@ def _rel(p: str) -> str:
 
 # ======================================================================== main
 
+def cut_out(img: Img, notes: List[str], keep: bool = False, force: bool = False):
+    """Every background layer off the logo: the canvas (flood from the border), then a card
+    enclosing the logo or the soft shadow a vanished card left behind. Returns (trimmed,
+    canvas colour or None, the colour enclosed fills are compared with, card info).
+    Shared by main() and selftest(), so the gate that is tested is the one that runs."""
+    # ---- alpha: real transparency, or derive it from a solid background
+    alpha = img.alpha()
+    transparent = sum(1 for v in alpha[::7] if v < 250) / max(1, len(alpha[::7]))
+    bg_removed = None
+    if transparent < 0.005:
+        bg, cover = detect_background(img)
+        if cover >= 0.6:
+            img = remove_background(img, bg)
+            bg_removed = bg
+            notes.append(f"opaque logo: background {ck.rgb_to_hex(bg)} removed by flood fill "
+                         f"from the border ({cover * 100:.0f}% of the border matched)")
+        else:
+            notes.append("opaque logo with a non-uniform border — kept as a full rectangle; "
+                         "supply a transparent PNG/SVG for cut-out variants and holes")
+
+    box = bbox(img)
+    if box is None:
+        raise ValueError("the logo is completely transparent")
+    trimmed = crop(img, box)
+
+    # ---- a second background layer: a card (or the shadow a removed card left behind)
+    card_info = None
+    hole_bg = bg_removed
+    cd = find_card(trimmed, bg_removed)
+    if cd and keep:
+        notes.append(f"a {ck.rgb_to_hex(cd['rgb'])} card covers {cd['share'] * 100:.0f}% of the "
+                     f"logo — KEPT (--keep-card)")
+        card_info = {"removed": False, "colour": ck.rgb_to_hex(cd["rgb"]),
+                     "share": round(cd["share"], 3), "verdict": cd["verdict"],
+                     "why": "--keep-card"}
+    elif cd and (cd["verdict"] == "card" or force):
+        freed = remove_card(trimmed, cd)
+        b2 = bbox(freed)
+        if b2 is None:
+            raise ValueError("removing the card left nothing — rerun with --keep-card")
+        trimmed = crop(freed, b2)
+        hole_bg = cd["rgb"]
+        forced = " (--remove-card)" if cd["verdict"] != "card" else ""
+        notes.append(f"removed a card{forced}: {ck.rgb_to_hex(cd['rgb'])} {cd['share'] * 100:.0f}% "
+                     f"of the area"
+                     + (f", plus a shadow/rim outside it ({cd['rim'] * 100:.0f}%)"
+                        if cd["rim"] >= 0.005 else "")
+                     + " — the logo is what it held; --keep-card if the card is part of "
+                       "the brand")
+        card_info = {"removed": True, "colour": ck.rgb_to_hex(cd["rgb"]),
+                     "share": round(cd["share"], 3), "verdict": cd["verdict"],
+                     "why": "--remove-card" if forced else "neutral surface enclosing the logo"}
+    elif cd:
+        notes.append(f"kept the {ck.rgb_to_hex(cd['rgb'])} square ({cd['share'] * 100:.0f}% of "
+                     f"the area) as part of the logo: {cd['why']}; --remove-card if it is "
+                     f"only a background")
+        card_info = {"removed": False, "colour": ck.rgb_to_hex(cd["rgb"]),
+                     "share": round(cd["share"], 3), "verdict": "badge", "why": cd["why"]}
+    if not (card_info and card_info["removed"]) and not keep:
+        sh = find_shadow(trimmed, bg_removed)
+        if sh:
+            for p in sh["pixels"]:
+                trimmed.px[p * 4 + 3] = 0
+            b2 = bbox(trimmed)
+            trimmed = crop(trimmed, b2)
+            notes.append(f"removed a soft drop shadow ({sh['share'] * 100:.0f}% of the area, "
+                         f"{sh['mid'] * 100:.0f}% mid-tones) left by a card that went with the "
+                         f"canvas; --keep-card keeps it")
+            card_info = {"removed": True, "colour": None, "share": round(sh["share"], 3),
+                         "verdict": "shadow", "why": "soft neutral ramp around the logo"}
+
+    return trimmed, bg_removed, hole_bg, card_info
+
+
+def _synth(w: int, h: int, bg, shapes, shadow=None) -> Img:
+    """A tiny stdlib rasteriser for selftest(): bg fill, an optional blurred drop shadow
+    ((x0, y0, x1, y1, radius, strength 0-1)), then shapes in order:
+    ("rrect", x0, y0, x1, y1, radius, rgb) | ("disc", cx, cy, r, rgb) | ("rect", ..., rgb)
+    | ("tri", (x, y) * 3, rgb). A bg of None = a transparent canvas."""
+    px = bytearray(w * h * 4)
+    for p in range(w * h):
+        if bg is not None:
+            px[p * 4:p * 4 + 4] = bytes((bg[0], bg[1], bg[2], 255))
+
+    def in_rrect(x, y, x0, y0, x1, y1, rad):
+        if not (x0 <= x < x1 and y0 <= y < y1):
+            return False
+        cx = min(max(x, x0 + rad), x1 - 1 - rad)
+        cy = min(max(y, y0 + rad), y1 - 1 - rad)
+        return (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad
+
+    if shadow:
+        x0, y0, x1, y1, rad, k = shadow
+        m = [1.0 if in_rrect(x, y, x0, y0, x1, y1, rad) else 0.0
+             for y in range(h) for x in range(w)]
+        r = 9
+        for _ in range(2):                       # two box blurs ~ a soft Gaussian
+            t = [0.0] * (w * h)
+            for y in range(h):
+                for x in range(w):
+                    t[y * w + x] = sum(m[y * w + xx] for xx in range(max(0, x - r), min(w, x + r + 1))) / (2 * r + 1)
+            m = [0.0] * (w * h)
+            for y in range(h):
+                for x in range(w):
+                    m[y * w + x] = sum(t[yy * w + x] for yy in range(max(0, y - r), min(h, y + r + 1))) / (2 * r + 1)
+        for p in range(w * h):
+            for c in range(3):
+                px[p * 4 + c] = int(round(px[p * 4 + c] * (1 - k * m[p])))
+    for sh in shapes:
+        kind, rgb = sh[0], sh[-1]
+        for y in range(h):
+            for x in range(w):
+                if kind == "rrect":
+                    hit = in_rrect(x, y, *sh[1:6])
+                elif kind == "rect":
+                    hit = sh[1] <= x < sh[3] and sh[2] <= y < sh[4]
+                elif kind == "disc":
+                    hit = (x - sh[1]) ** 2 + (y - sh[2]) ** 2 <= sh[3] ** 2
+                else:                            # triangle, by barycentric signs
+                    (ax, ay), (bx, by), (cx, cy) = sh[1:4]
+                    d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by)
+                    d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy)
+                    d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay)
+                    hit = not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+                if hit:
+                    i = (y * w + x) * 4
+                    px[i:i + 4] = bytes((rgb[0], rgb[1], rgb[2], 255))
+    return Img(w, h, px)
+
+
+def selftest() -> int:
+    """Negative tests of the card gate — `brand_from_logo.py selftest`. Synthetic logos, no
+    ffmpeg. A card must go (with its shadow), a badge must stay. Exit 1 on any failure."""
+    fails = []
+
+    def expect(cond, what):
+        print(f"  {'✓' if cond else '✗'} {what}")
+        if not cond:
+            fails.append(what)
+
+    W, H = 240, 170
+    card = (34, 30, 206, 140)
+    blue, navy, gold, white = (37, 99, 235), (15, 23, 42), (214, 170, 56), (255, 255, 255)
+    inside = [("disc", 72, 85, 24, blue), ("disc", 72, 85, 10, white),
+              ("rect", 110, 66, 128, 104, navy), ("rect", 138, 66, 156, 104, navy),
+              ("rect", 166, 66, 184, 104, navy)]
+
+    def run(img, **kw):
+        notes: List[str] = []
+        t, _, _, info = cut_out(img, notes, **kw)
+        return t, info
+
+    shade = (card[0] + 4, card[1] + 8, card[2] + 4, card[3] + 10, 14, 0.45)
+    t, info = run(_synth(W, H, (226, 226, 228), [("rrect",) + card + (14, white)] + inside, shade))
+    expect(info and info["removed"] and info["verdict"] == "card" and t.w < 0.8 * (card[2] - card[0]),
+           f"white card + shadow on grey → card removed, logo {t.w}x{t.h} (card was "
+           f"{card[2] - card[0]} wide)")
+    t, info = run(_synth(W, H, white, [("rrect",) + card + (14, white)] + inside, shade))
+    expect(info and info["verdict"] == "shadow" and t.w < 0.8 * (card[2] - card[0]),
+           f"white card + shadow on white → the leftover shadow removed, logo {t.w}x{t.h}")
+    t, info = run(_synth(W, H, white, [("rrect",) + card + (14, (22, 24, 38)),
+                                       ("disc", 72, 85, 24, gold), ("disc", 72, 85, 10, (22, 24, 38)),
+                                       ("rect", 110, 66, 128, 104, white),
+                                       ("rect", 138, 66, 156, 104, white)]))
+    expect(info and info["removed"] and info["verdict"] == "card",
+           "dark card on white holding a gold + white logo → card removed")
+    t, info = run(_synth(W, H, white, [("rrect", 60, 25, 180, 145, 22, (242, 120, 30)),
+                                       ("disc", 120, 85, 30, white), ("disc", 120, 85, 14, (242, 120, 30))]))
+    expect(info and not info["removed"] and info["verdict"] == "badge" and t.w >= 115,
+           "orange filled badge with a white ring → KEPT (a coloured square is the brand)")
+    t, info = run(_synth(W, H, white, [("rrect", 60, 25, 180, 145, 22, (12, 12, 14)),
+                                       ("tri", (90, 120), (120, 55), (150, 120), white)]))
+    expect(info and not info["removed"] and info["verdict"] == "badge" and t.w >= 115,
+           "black app-icon badge with a white knock-out symbol → KEPT")
+    t, info = run(_synth(W, H, white, inside))
+    expect(info is None, "plain logo on white → nothing extra removed")
+    t, info = run(_synth(W, H, (226, 226, 228), [("rrect",) + card + (14, white)] + inside, shade),
+                  keep=True)
+    expect(info and not info["removed"] and t.w >= card[2] - card[0],
+           "--keep-card keeps the card")
+    print(f"\n  {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
 def main(argv=None) -> int:
     ap = hfcfg.arg_parser(__doc__.split("\n\n")[0])
     ap.add_argument("logo", help="logo file: png / jpg / webp / svg")
@@ -1148,7 +1588,15 @@ def main(argv=None) -> int:
     ap.add_argument("--primary", help="override the primary colour (#hex)")
     ap.add_argument("--accent", help="override / supply the accent colour (#hex) — "
                                      "required for a monochrome logo")
+    ap.add_argument("--keep-card", action="store_true",
+                    help="keep a card / drop shadow around the logo (default: a neutral card "
+                         "enclosing the logo is removed as a second background)")
+    ap.add_argument("--remove-card", action="store_true",
+                    help="remove the enclosing square even when it looks like a badge "
+                         "(coloured, or the symbol is a knock-out of it)")
     a = ap.parse_args(argv)
+    if a.keep_card and a.remove_card:
+        sys.exit("--keep-card and --remove-card contradict each other")
     hfcfg.require("ffmpeg", "ffprobe")
     for v in (a.primary, a.accent):
         if v:
@@ -1172,25 +1620,11 @@ def main(argv=None) -> int:
             notes.append(f"SVG: colours declared in the source: {', '.join(declared) or 'none'}")
         img = decode(raster, WORK_MAX)
 
-    # ---- alpha: real transparency, or derive it from a solid background
-    alpha = img.alpha()
-    transparent = sum(1 for v in alpha[::7] if v < 250) / max(1, len(alpha[::7]))
-    bg_removed = None
-    if transparent < 0.005:
-        bg, cover = detect_background(img)
-        if cover >= 0.6:
-            img = remove_background(img, bg)
-            bg_removed = bg
-            notes.append(f"opaque logo: background {ck.rgb_to_hex(bg)} removed by flood fill "
-                         f"from the border ({cover * 100:.0f}% of the border matched)")
-        else:
-            notes.append("opaque logo with a non-uniform border — kept as a full rectangle; "
-                         "supply a transparent PNG/SVG for cut-out variants and holes")
-
-    box = bbox(img)
-    if box is None:
-        sys.exit("the logo is completely transparent")
-    trimmed = crop(img, box)
+    try:
+        trimmed, bg_removed, hole_bg, card_info = cut_out(img, notes, a.keep_card,
+                                                          a.remove_card)
+    except ValueError as e:
+        sys.exit(str(e))
 
     # ---- colours
     colours = sample_colours(trimmed)
@@ -1205,7 +1639,7 @@ def main(argv=None) -> int:
     colors = res["colors"]
 
     # ---- holes + variants
-    holes, knock = find_holes(trimmed, bg_removed, white_counts=white_share < 0.5)
+    holes, knock = find_holes(trimmed, hole_bg, white_counts=white_share < 0.5)
     if any(h["fill"] == "solid-fill" for h in holes):
         notes.append("some enclosed regions are filled white/background in the source; they "
                      "count as holes; logo_knock.png (used by the outro) and the silhouettes knock "
@@ -1245,7 +1679,7 @@ def main(argv=None) -> int:
                  "knocked": _rel(p_knock) if has_fill else "",
                  "w": trimmed.w, "h": trimmed.h,
                  "aspect": round(trimmed.w / float(trimmed.h), 4), "holes": holes,
-                 "mark": mark,
+                 "mark": mark, "card": card_info,
                  "monochrome": res["monochrome"]},
         "colors": colors,
         "palette": [{"hex": c["hex"], "share": round(c["share"], 4)} for c in palette],
@@ -1293,4 +1727,6 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["selftest"]:
+        sys.exit(selftest())
     sys.exit(main())
