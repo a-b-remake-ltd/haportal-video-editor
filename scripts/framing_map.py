@@ -322,13 +322,35 @@ def main():
         sys.exit("no stable face found in the samples — place by eye from the sheet "
                  "(python3 scripts/grid.py overlay) and set captions.center_y by hand")
 
+    # Drop implausible per-frame readings BEFORE aggregating: a hand raised to the chest or
+    # a microphone read as the collar gave a "chin" 700 px below the face on a real phone
+    # take, and the 80th percentile then pushed the caption band onto the hands. A chin sits
+    # 0.35-1.4 face widths below the face centre; a collar sits within ~1.2 face widths of it.
+    dropped = 0
+    for sm in samples:
+        fw_s, fcy = sm.get("face_w"), sm.get("face_cy")
+        if not fw_s or fcy is None:
+            continue
+        if sm.get("chin") is not None and not (0.35 * fw_s <= sm["chin"] - fcy <= 1.4 * fw_s):
+            sm["chin"], dropped = None, dropped + 1
+        ch = sm.get("chin")
+        if sm.get("collar") is not None and ch is not None and \
+                not (-0.15 * fw_s <= sm["collar"] - ch <= 1.2 * fw_s):
+            sm["collar"], sm["chest_bot"], dropped = None, None, dropped + 1
+    if dropped:
+        print(f"  ignored {dropped} implausible chin/collar reading(s) (a hand or a mic in "
+              f"front of the chest)")
     med = lambda k: float(np.median([s[k] for s in samples if s.get(k) is not None])) \
         if any(s.get(k) is not None for s in samples) else None
     fw = med("face_w") * K
     fm = {"head_top": round(med("head_top") * K), "face_cx": round(med("face_cx") * K),
           "face_cy": round(med("face_cy") * K), "face_w": round(fw), "chin": round(med("chin") * K)}
     col, cb = med("collar"), med("chest_bot")
-    fm["chest"] = [round(col * K), round(min(cb * K, g["safe"][3]))] if col is not None else None
+    fm["chest"] = None
+    if col is not None:
+        y0 = round(col * K)
+        y1 = round(min((cb if cb is not None else H / K) * K, g["safe"][3]))
+        fm["chest"] = [y0, y1] if y1 > y0 + 40 else [y0, g["safe"][3]]   # never upside down
     hs = sorted(s["hands"] for s in samples if s.get("hands") is not None)
     fm["hands_y"] = round(hs[len(hs) // 5] * K) if hs else None
     fm["hands_frames"] = f"{len(hs)}/{len(samples)}"
@@ -351,9 +373,10 @@ def main():
     # over the frames), not the average frame: a band that clears the median chin still
     # sits on the beard every time the speaker nods. It must also start BELOW the collar —
     # a line straddling neck and shirt reads as sitting on the throat.
-    p80 = lambda k: float(np.percentile([s[k] for s in samples if s.get(k) is not None], 80)) * K
+    p80 = lambda k: float(np.percentile([s[k] for s in samples if s.get(k) is not None], 80)) * K \
+        if any(s.get(k) is not None for s in samples) else None
     chin80 = round(p80("chin"))
-    collar80 = round(p80("collar")) if fm["chest"] else None
+    collar80 = round(p80("collar")) if fm["chest"] and p80("collar") is not None else None
     fm["chin_p80"], fm["collar_p80"] = chin80, collar80
     need = round(0.15 * fw)
     cy_cfg = cfg.get("captions", {}).get("center_y")
@@ -423,6 +446,18 @@ def main():
             for k in ("center_y", "center_y_reason", "center_y_source"):
                 caps.pop(k, None)
         after = caps.get("center_y")
+        # Readability is not optional for a user who never reads a warning: white shadow
+        # captions on a bright band (a white shirt, a bright wall) switch to the plate style.
+        lu = fm.get("caption_band_luma")
+        style_now = caps.get("style", cfg.get("captions", {}).get("style", "shadow"))
+        if lu is not None and lu > 0.55 and style_now == "shadow":
+            caps["style"] = "plate"
+            caps["style_reason"] = f"caption band is bright (p75 luma {lu:.2f}) — framing_map"
+            print(f"  --apply: captions.style shadow → plate (the band behind the captions is "
+                  f"bright, luma {lu:.2f}: white text would not read)")
+        elif caps.get("style_reason", "").endswith("framing_map") and (lu or 0) <= 0.55:
+            caps.pop("style", None)
+            caps.pop("style_reason", None)
         json.dump(raw, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
         if before == after:
             print(f"  --apply: captions.center_y unchanged ({after or 'grid default'})")
