@@ -649,8 +649,9 @@ def main():
                          "--out; src/words.json only when neither --out nor --words is given")
     ap.add_argument("--out-dir", default="src/transcripts",
                     help="several files: one <name>.json each here")
-    ap.add_argument("--flags", default="src/transcript_flags.md",
-                    help="review list (AI substitutions, doubtful words); \"\" to skip")
+    ap.add_argument("--flags", default=None,
+                    help="review list (AI substitutions, doubtful words); \"\" to skip. "
+                         "Default: src/transcript_flags.md, or <out stem>_flags.md with --out")
     ap.add_argument("--glossary", default="", help='"term1,term2" — brand names, jargon')
     ap.add_argument("--start", type=float, help="transcribe only from here (s)")
     ap.add_argument("--end", type=float, help="… to here (s)")
@@ -689,6 +690,10 @@ def main():
         hfcfg.ensure_deps([ENGINE_MODULE[eng]])
 
     out_path, words_path = output_paths(a.out, a.words)
+    if a.flags is None:
+        # same rule as the words file: a side run never overwrites the project's review list
+        a.flags = ("src/transcript_flags.md" if a.out is None
+                   else f"{os.path.splitext(a.out)[0]}_flags.md")
     results = []
     for m in a.media:
         r = transcribe(m, lang, eng, mdl, glossary, a.start, a.end,

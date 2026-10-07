@@ -168,16 +168,30 @@ def split_cards(words, lang, bounds=(), windows=()):
     Sentence ends and hidden-window edges are hard breaks.
     """
     openers = set(OPENERS.get(lang.get("code", ""), set())) | set(lang.get("clause_openers") or [])
-    locked = [tuple(p) for p in (lang.get("locked_phrases") or [])]
+    locked = parse_locked(lang.get("locked_phrases"))
     sticky = sticky_set(lang)
     lean = set(LEAN_BACK.get(lang.get("code", ""), set()))
+    use_locks = [True]                      # dropped for one run only if it cannot be honoured
 
     def core(w):
         return w.rstrip(",.?!…").strip("\"'“”״׳()").lower()
 
-    def locked_pair(a, b):
-        return any(len(p) == 2 and core(a) == p[0].lower() and core(b) == p[1].lower()
-                   for p in locked)
+    def tok_is(w, t, first):
+        c = core(w)
+        # the phrase's first word may carry a Hebrew prefix: "בקלוד קוד", "ב-Claude Code"
+        return c == t or (first and re.fullmatch(r"[ובהלכמש]{1,3}-?" + re.escape(t), c) is not None)
+
+    def splits_locked(run, j):
+        """True when a card break between run[j-1] and run[j] cuts a locked phrase."""
+        if not use_locks[0]:
+            return False
+        for p in locked:
+            for k in range(1, len(p)):      # k words of the phrase before the break
+                s0 = j - k
+                if s0 >= 0 and s0 + len(p) <= len(run) and all(
+                        tok_is(run[s0 + m][2], p[m], m == 0) for m in range(len(p))):
+                    return True
+        return False
 
     # sentences = runs between hard breaks
     runs, cur = [], []
@@ -213,7 +227,7 @@ def split_cards(words, lang, bounds=(), windows=()):
                 c -= 0.5
             if core(run[j][2]) in lean:
                 c += 6.0
-            if locked_pair(last, run[j][2]):
+            if splits_locked(run, j):
                 return None
         c += 1.5 * sum(1 for w in ws[:-1] if w.endswith(","))
         span = sum(1 for bd in bounds for k in range(i + 1, j)
@@ -225,17 +239,26 @@ def split_cards(words, lang, bounds=(), windows=()):
     cards = []
     for run in runs:
         n = len(run)
-        best = [0.0] + [None] * n
-        back = [0] * (n + 1)
-        for j in range(1, n + 1):
-            for i in range(max(0, j - MAXW), j):
-                if best[i] is None:
-                    continue
-                c = cost(run, i, j)
-                if c is None:
-                    continue
-                if best[j] is None or best[i] + c < best[j]:
-                    best[j], back[j] = best[i] + c, i
+        for honour in (True, False):
+            use_locks[0] = honour
+            best = [0.0] + [None] * n
+            back = [0] * (n + 1)
+            for j in range(1, n + 1):
+                for i in range(max(0, j - MAXW), j):
+                    if best[i] is None:
+                        continue
+                    c = cost(run, i, j)
+                    if c is None:
+                        continue
+                    if best[j] is None or best[i] + c < best[j]:
+                        best[j], back[j] = best[i] + c, i
+            if best[n] is not None or not locked:
+                break
+            # a locked phrase that cannot sit on one card here (wider than the safe zone,
+            # or squeezed by the word ceiling): the card limits win, and it is said aloud
+            print(f"  ! locked phrase cannot stay on one card in "
+                  f"'{' '.join(x[2] for x in run)}' — split by the card limits")
+        use_locks[0] = True
         j, parts = n, []
         while j > 0:
             i = back[j]
@@ -243,6 +266,29 @@ def split_cards(words, lang, bounds=(), windows=()):
             j = i
         cards.extend(reversed(parts))
     return cards
+
+
+def parse_locked(phrases):
+    """config language.locked_phrases → [tuple of lower-case words], each ≥ 2 words.
+
+    Accepts a string ("קלוד קוד", "Claude Code") or a list of any length
+    (["Claude", "Code"], ["בינה", "מלאכותית", "יוצרת"]). It used to take only 2-word
+    LISTS and silently ignore everything else — a phrase written the natural way, as a
+    string, did nothing. A phrase longer than captions.max_words can never fit on one
+    card; it is reported and skipped."""
+    out = []
+    for p in phrases or []:
+        toks = p.split() if isinstance(p, str) else [str(t) for t in p]
+        toks = [t.strip().strip("\"'“”״׳()").rstrip(",.?!…").lower() for t in toks]
+        toks = [t for t in toks if t]
+        if len(toks) < 2:
+            continue
+        if len(toks) > MAXW:
+            print(f"  ! locked phrase {' '.join(toks)!r} has {len(toks)} words — more than "
+                  f"captions.max_words ({MAXW}); it cannot stay on one card, ignored")
+            continue
+        out.append(tuple(toks))
+    return out
 
 
 def sticky_set(lang):

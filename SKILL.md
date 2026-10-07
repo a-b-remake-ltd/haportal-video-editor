@@ -43,7 +43,10 @@ Re-read this file at the start of every round.
 ## The session
 
 1. **Inventory.** ffprobe the raw (keep its native fps: 25 for most avatar renders, 30 for phone
-   footage). If `project.md` exists, summarise the last session in one sentence.
+   footage). A take kept whole keeps that rate; a cut A-roll is always 25 fps. Set
+   `project.fps` in config.json to the A-roll's rate: the render uses it, and preflight fails
+   when the master, the config and the A-roll disagree. If `project.md` exists, summarise the
+   last session in one sentence.
 2. **Ask once, briefly, in the user's language**, and continue with defaults if they say
    nothing. The questions are: a reference video? A logo? The outro (only with a logo)? Organic,
    or a paid ad too (`grid.profile: ads`)?
@@ -124,7 +127,9 @@ a quiet procedural bed (`--procedural`), or no music. Say which, plainly.
 ```bash
 # 1. the A-roll
 python3 $S/scripts/cut_aroll.py --src raw.mp4 --whole          # an avatar or clean single take
-#   (a real recording with retakes: --plan, write chunks.json, then --chunks chunks.json)
+#   a real recording with retakes: run xcheck.py (step 2) on the raw FIRST, so the cut sees
+#   the words; then --plan, write chunks.json, then --chunks chunks.json. The cut fails
+#   unless the A-roll's audio is in sync with the raw at every boundary (references/cutting.md)
 
 # 2. words: two engines, diff, corrections → src/raw_words.json, then onto the A-roll timeline
 python3 $S/scripts/xcheck.py raw.mp4                           # writes src/transcript_diff.md
@@ -157,7 +162,9 @@ python3 $S/scripts/build_index.py                              # rebuild with th
 python3 $S/scripts/validate.py --expect build/expected.json
 python3 $S/scripts/grid.py check index.html
 npx hyperframes check
-HF_VIDEO_COVERAGE_THRESHOLD=0 npx hyperframes render --quality high --video-bitrate 32M --output renders/render.mp4
+FPS=$(python3 -c "import sys;sys.path.insert(0,'$S/scripts');import hfcfg;print(hfcfg.load()['project']['fps'])")
+HF_VIDEO_COVERAGE_THRESHOLD=0 npx hyperframes render --quality high --fps $FPS --video-bitrate 32M \
+        --output renders/render.mp4      # --fps always: without it the render falls back to 30
 python3 $S/scripts/finish.py renders/render.mp4 --out renders/final.mp4
 python3 $S/scripts/preflight_qa.py . --aroll assets/aroll.mp4 --transcript src/words.json \
         --render renders/final.mp4 --checklist --lint
@@ -201,7 +208,8 @@ python3 $S/scripts/qa_frames.py renders/final.mp4              # LOOK at every s
 
 ## QA (`references/qa.md`)
 
-Before showing anything: the snapshots and contact sheets looked at, frame by frame; loudness;
+Before showing anything: the A-roll's voice within 10 ms of the raw at every cut and one fps
+end to end (both gated); the snapshots and contact sheets looked at, frame by frame; loudness;
 no frozen frames (`freezedetect` 0.6 s), no black; intelligibility of the master ≥97% against
 the words; every transition frame looked at; the final checklist all ✓. If a check fails, fix
 the cause and re-render.

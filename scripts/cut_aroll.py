@@ -529,17 +529,24 @@ def stream_info(path):
         except (TypeError, ValueError):
             return d
     # one field per probe: ffprobe prints fields in ITS order, not the order asked for
-    v_s = hfcfg.probe(path, "stream=start_time", "v:0")
-    a_s = hfcfg.probe(path, "stream=start_time", "a:0")
+    v_s = probe1(path, "stream=start_time", "v:0")
+    a_s = probe1(path, "stream=start_time", "a:0")
     fps = probe_fps(path)
     n = hfcfg.frames(path)
     return {"v_start": f(v_s), "a_start": f(a_s), "fps": fps, "frames": n,
             "v_dur": n / fps if fps else 0.0}
 
 
+def probe1(path, entry, stream):
+    """ONE ffprobe value. On a rotated phone clip the CSV row carries an extra (empty)
+    field for the display-matrix side data — "30/1," — and a naive float() of it
+    crashed --whole on exactly the footage it exists for."""
+    return (hfcfg.probe(path, entry, stream) or "").split(",")[0].strip()
+
+
 def probe_fps(path):
     """The video stream's nominal frame rate (r_frame_rate) as a float, or 0.0."""
-    fr = (hfcfg.probe(path, "stream=r_frame_rate", "v:0") or "0/1").split("/")
+    fr = (probe1(path, "stream=r_frame_rate", "v:0") or "0/1").split("/")
     try:
         return float(fr[0]) / float(fr[1] if len(fr) > 1 else 1)
     except (ValueError, ZeroDivisionError):
@@ -625,15 +632,19 @@ def sync_problems(aroll, src, segs, verbose=True):
 
 def overlap_problems(segs, words=None):
     """GATE: no two segments share source audio, and no spoken word plays twice.
+    Returns a list of failure strings (empty = clean).
 
     Ranges are compared pairwise (a re-ordered chunk list can overlap non-neighbours).
     With the raw transcript each shared stretch is named by the word in it: a word is
     heard twice when the SAME source instant of it (≥ 10 ms) lies in two segments — the
-    duplicated syllable at a join. A word that merely straddles a seamless join (the
-    next segment continues where this one stopped) plays once and is fine.
-    Returns (errors, warnings); a warning names a segment that ENDS inside a word and
-    jumps elsewhere (whisper times are ±0.1 s, so that one is advice, not a failure)."""
-    errs, warns = [], []
+    duplicated syllable at a join. A word that merely straddles a seamless join plays
+    once and is fine.
+
+    Deliberately NOT checked from the transcript: "a segment ends inside a word".
+    Whisper folds every pause into the next word's stamp, so on a clean take that
+    advice fired at 11 of 16 joins, all false. A real mid-word cut can only come from
+    the overlap clamp, which reports it from the audio."""
+    errs = []
     rng = [(s["name"], float(s["src_start"]), float(s["src_end"])) for s in segs]
     for i in range(len(rng)):
         for j in range(i + 1, len(rng)):
@@ -645,13 +656,7 @@ def overlap_problems(segs, words=None):
                 for ws, we, w in (words or []):
                     if min(we, hi) - max(ws, lo) >= 0.01:
                         errs.append(f"'{w}' ({ws:.2f}s) plays twice: in {a[0]} and {b[0]}")
-    for k, (n, a, b) in enumerate(rng[:-1]):
-        nxt = rng[k + 1]
-        seamless = b - 1e-3 <= nxt[1] <= b + FRAME + 0.005
-        for ws, we, w in (words or []):
-            if a < ws < b - 0.03 and we > b + 0.06 and not seamless:
-                warns.append(f"{n} ends inside '{w}' ({ws:.2f}-{we:.2f}s, cut at {b:.2f}s)")
-    return errs, warns
+    return errs
 
 
 # ------------------------------------------------------------------ onset report
@@ -697,9 +702,7 @@ def keep_whole(src, out, cfg):
     to another rate is a needless re-time. Writes the same bounds.json the cutter writes,
     with one segment, so every later step runs unchanged. One AAC encode, no joins, so
     there is nothing to drift; the A/V length gate still runs."""
-    fr = hfcfg.probe(src, "stream=r_frame_rate", "v:0") or "25/1"
-    n, d = (fr.split("/") + ["1"])[:2]
-    fps = round(float(n) / float(d or 1))
+    fps = round(probe_fps(src) or 25)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     r = hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", src,
                    "-vf", f"scale=1080:1920:flags=lanczos,fps={fps},setsar=1,setpts=N/({fps}*TB)",
@@ -841,9 +844,7 @@ def main():
             trim[n] = round(trim.get(n, 0.0) + v, 4)
 
     # GATE: no shared source audio, no word heard twice
-    errs, owarn = overlap_problems(segs, words)
-    for w in owarn:
-        print(f"  ! {w}")
+    errs = overlap_problems(segs, words)
     if errs:
         for e in errs:
             print(f"  ✗ {e}")

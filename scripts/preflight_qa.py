@@ -160,7 +160,7 @@ def check_aroll_sync(aroll):
     bad = cut.sync_problems(aroll, src if src and os.path.exists(src) else None, segs,
                             verbose=False)
     if all("src_start" in s and "src_end" in s for s in segs):
-        bad += cut.overlap_problems(segs)[0]
+        bad += cut.overlap_problems(segs)
     if bad:
         issues.append("A-ROLL OUT OF SYNC (re-cut with scripts/cut_aroll.py): " + "; ".join(bad[:4]))
     else:

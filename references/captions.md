@@ -70,7 +70,18 @@ Generate them, never hand-write them. `scripts/captions.py` implements the split
    breaks too: a card is either entirely under a headline or entirely outside it.
 5. **No 1-word orphans.** Fold back if the previous card has room; otherwise lend it the
    previous card's last word — **3+2 beats 4+1**.
-6. **Never split a locked phrase** (a two-token brand name, a compound term).
+6. **Never split a locked phrase** (a brand name, a compound term). List them in
+   `config.json → language.locked_phrases`, either as a string or as a list of words, any
+   length from 2 up to `captions.max_words`:
+
+   ```json
+   "locked_phrases": ["קלוד קוד", "Claude Code", ["בינה", "מלאכותית", "יוצרת"]]
+   ```
+
+   The first word may carry a Hebrew prefix and still match ("בקלוד קוד", "ב-Claude Code").
+   A phrase longer than `max_words` can never fit on one card, so captions.py says so and
+   ignores it. Where a phrase cannot stay whole (the card would be wider than the safe
+   zone), the card limits win and the sentence is named in the output.
 
 ### Measure every plate's WIDTH at build time
 
