@@ -1298,8 +1298,8 @@ def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.
     """Full-frame steel prison bars. Plant: slam down at slam_t (staggered, power4.in, the
     first bar LANDS on slam_t, camera shake on impact), lift away at lift_t. Callback: fade
     back in at fade_t and burst outward with sparks at burst_t. Decoration: data-grid=bleed.
-    sfx= roles: slam (bars 0.42, exempt — on the beat, so it can mask the word it lands on:
-    re-level it with sfx={"slam": {"vol": 0.14, "dt": -0.12}}), fade (bars 0.2), lift
+    sfx= roles: slam (bars 0.16, exempt, 0.12 s before the word so it never masks it;
+    re-level with sfx={"slam": {"vol": 0.2, "dt": -0.08}}), fade (bars 0.2), lift
     (whoosh_low 0.16), burst (shatter 0.32)."""
     ctx = s.ctx
     cue = Sfx(s, sfx, "bars", SFX_ROLES["bars"])
@@ -1319,7 +1319,9 @@ def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.
             s.tween(f"#{cid}c{c}", {"scaleX": 0}, {"scaleX": 1}, slam_t, 0.2, "power3.out")
         if shake:
             s.cam_shake(slam_t)
-        cue("slam", "bars", slam_t - 0.02, "exempt", 0.42)
+        # the impact lands a beat BEFORE the word and moderate: at 0.42 on the beat it masked
+        # the very word it illustrates in a from-zero test ("הכלא" heard as "הכאלה")
+        cue("slam", "bars", slam_t - 0.12, "exempt", 0.16)
     if fade_t is not None:
         s.fade("#" + cid, fade_t, 0.6, 0, opacity)
         cue("fade", "bars", fade_t, "exempt", 0.2)

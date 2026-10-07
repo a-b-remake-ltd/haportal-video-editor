@@ -186,7 +186,7 @@ Opt-in: only when there is a logo **and** the user said yes (never on a 16:9 pie
 - Translation: with transform-origin `o = (ox, oy)` (the door centre) and the door's top-centre `p = (doorCenterX, T)`, pin p onto q:
   `t = q − (o + (p − o)·s)`.
   Worked numbers: o=(540,880), T=480, s=0.17 → p maps to (540, 812); with q=(433.3, 788.2), t = (−106.7, −23.8).
-- **Grid shift:** if the logo pokes into the right button column, shift the whole logo with `tl.set("#logo",{x:DX},0)` (e.g. DX=−40) and add DX to the cam's tx. The orbs' sink target stays the opening's center, because the orbs live inside `#logo`.
+- **Always centred:** the lockup (mark, wordmark parts, tagline, handle) sits on the frame centre x 540, every text line centred in the x 140-940 lane. A lockup too wide to stay inside x 140-940 after its slow push is SCALED down, never shifted; the push pivots on x 540 and the door's flight follows it, so the door still lands on the mark.
 - **CSS class names MUST NOT collide.** A generic particle class `.tw` once collided with the tagline's `.tw` and stacked the tagline words on top of each other. Prefix scene-specific classes.
 
 ---
