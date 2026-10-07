@@ -9,12 +9,17 @@ Rules, in order (references/captions.md):
      sentence and the head of the next
   3. HARD break at every hidden-window edge (build/caption_hide.json: the hook world, every
      kinetic headline, designed moments that own the frame, the outro): a card is either
-     entirely inside a window (never shown: the headline IS the caption) or entirely outside
+     entirely inside a window (never shown: the headline IS the caption) or entirely outside.
+     A word belongs to the side where MOST of it is spoken (word_zone): one that straddles
+     a window's end goes to the visible card after it, never silently lost
   4. soft break after a comma, or before a clause opener, once the card has >= 2 words
   5. word ceiling — config captions.max_words (3 by default)
   6. no 1-word orphans (fold back if there is room, otherwise lend the previous card's
      last word)
-  7. never split a locked phrase; avoid spanning a long pause inside one card
+  7. never split a locked phrase (common Hebrew fixed pairs — "אף אחד", "אף פעם", "כל
+     יום", "בכל זאת", "בסופו של דבר" — are locked by default; config
+     language.locked_phrases adds, language.locked_defaults: false / unlocked_phrases
+     remove); avoid spanning a long pause inside one card
   (2-7 are weighed together: each sentence is partitioned optimally — see split_cards)
   8. never END a card on a sticky word — a preposition, conjunction, relative word or a
      bare number belongs to what follows. "תודה לך על מה" / "שעשית בשבילי" reads broken;
@@ -149,6 +154,25 @@ def zone_of(t, windows):
     return -1
 
 
+def word_zone(w, windows):
+    """The hidden window a WORD [s, e, text] belongs to, else -1 — by where it is spoken,
+    not only where it starts.
+
+    WHY: a word that STRADDLES a window's end — it starts 6.12 inside the hook world that
+    ends 6.32 and runs to 6.54 — used to count as inside (by its start), so it went on a
+    hidden card, and no hook text showed it either: a spoken word never on screen. Now a
+    word that starts inside a window but is spoken MORE after the window's end than inside
+    it belongs to the visible side; its card starts on the window's end (the start rule
+    already moves a card out of a window). A word mostly inside stays with the window."""
+    k = zone_of(w[0], windows)
+    if k < 0:
+        return k
+    a, b = windows[k]
+    inside = min(w[1], b) - max(w[0], a)
+    after = w[1] - b
+    return -1 if after > inside + 1e-6 else k
+
+
 def split_cards(words, lang, bounds=(), windows=()):
     """Split into cards by choosing the BEST partition of each sentence, not greedily.
 
@@ -159,7 +183,8 @@ def split_cards(words, lang, bounds=(), windows=()):
       * size: 3 words is ideal, 2 and 4 fine, 1 only for a punctuated interjection
         ("כן,"), never more than MAXW
       * ending on a sticky word: heavy penalty (rule 7)
-      * ending on a comma: bonus. A comma inside a card: penalty
+      * ending on a comma: bonus. A comma inside a card: a penalty bigger than any split
+        at it, except one that leaves a bare 1-word orphan
       * the next card opening with a clause opener: bonus
       * spanning a cut point (a pause in the speech): penalty, but cheaper than a
         sticky ending — "כן," / "גם אם לא דיברתם" across a pause is the right read
@@ -168,7 +193,7 @@ def split_cards(words, lang, bounds=(), windows=()):
     Sentence ends and hidden-window edges are hard breaks.
     """
     openers = set(OPENERS.get(lang.get("code", ""), set())) | set(lang.get("clause_openers") or [])
-    locked = parse_locked(lang.get("locked_phrases"))
+    locked = parse_locked(locked_list(lang))
     sticky = sticky_set(lang)
     lean = set(LEAN_BACK.get(lang.get("code", ""), set()))
     use_locks = [True]                      # dropped for one run only if it cannot be honoured
@@ -196,7 +221,7 @@ def split_cards(words, lang, bounds=(), windows=()):
     # sentences = runs between hard breaks
     runs, cur = [], []
     for w in words:
-        if cur and zone_of(w[0], windows) != zone_of(cur[-1][0], windows):
+        if cur and word_zone(w, windows) != word_zone(cur[-1], windows):
             runs.append(cur)               # a hidden-window edge: hard break
             cur = []
         cur.append(w)
@@ -229,7 +254,12 @@ def split_cards(words, lang, bounds=(), windows=()):
                 c += 6.0
             if splits_locked(run, j):
                 return None
-        c += 1.5 * sum(1 for w in ws[:-1] if w.endswith(","))
+        # a comma INSIDE a card costs more than any split at it (a split there earns the
+        # comma bonus and at worst turns a 3-word card into two 2-word ones, Δ ≈ 2.8): "לנו
+        # הזדמנות, לחכות" and "עליהם, וזה" read as one phrase across the pause. The one
+        # split that still loses is a 1-word orphan WITHOUT punctuation (6.0): then the
+        # comma stays inside.
+        c += 4.0 * sum(1 for w in ws[:-1] if w.endswith(","))
         span = sum(1 for bd in bounds for k in range(i + 1, j)
                    if run[k - 1][0] < bd <= run[k][0] + 0.02)
         c += 4.0 * span
@@ -268,6 +298,32 @@ def split_cards(words, lang, bounds=(), windows=()):
     return cards
 
 
+# Fixed pairs a card must never split ("אף" / "אחד" reads as two thoughts). Locked by
+# default; config language.locked_phrases ADDS to them, language.locked_defaults: false
+# turns these off, language.unlocked_phrases removes single ones.
+LOCKED_DEFAULT = {
+    "he": ["אף אחד", "אף פעם", "כל יום", "בכל זאת", "בסופו של דבר"],
+    "en": [],
+}
+
+
+_DEFAULT_KEYS = {p.lower() for v in LOCKED_DEFAULT.values() for p in v}
+
+
+def locked_list(lang):
+    """The locked phrases in force: the language defaults (unless switched off) minus
+    language.unlocked_phrases, plus language.locked_phrases."""
+    def key(p):
+        return " ".join(p.split() if isinstance(p, str) else [str(t) for t in p]).lower()
+    out = []
+    if lang.get("locked_defaults", True):
+        drop = {key(p) for p in lang.get("unlocked_phrases") or []}
+        out += [p for p in LOCKED_DEFAULT.get(lang.get("code", ""), []) if key(p) not in drop]
+    have = {key(p) for p in out}
+    out += [p for p in lang.get("locked_phrases") or [] if key(p) not in have]
+    return out
+
+
 def parse_locked(phrases):
     """config language.locked_phrases → [tuple of lower-case words], each ≥ 2 words.
 
@@ -284,8 +340,9 @@ def parse_locked(phrases):
         if len(toks) < 2:
             continue
         if len(toks) > MAXW:
-            print(f"  ! locked phrase {' '.join(toks)!r} has {len(toks)} words — more than "
-                  f"captions.max_words ({MAXW}); it cannot stay on one card, ignored")
+            if " ".join(toks) not in _DEFAULT_KEYS:     # a default that cannot fit: quiet
+                print(f"  ! locked phrase {' '.join(toks)!r} has {len(toks)} words — more than "
+                      f"captions.max_words ({MAXW}); it cannot stay on one card, ignored")
             continue
         out.append(tuple(toks))
     return out
@@ -493,11 +550,17 @@ def main():
     ap.add_argument("--hide", default="build/caption_hide.json",
                     help="hidden windows from build_index.py (\"\" to ignore)")
     ap.add_argument("--outro", default="build/outro.json")
+    ap.add_argument("--media", default="media.json",
+                    help="for the headline texts: a word under a headline must be in it")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the splitter / gate tests and exit")
     ap.add_argument("--aroll", default="assets/aroll.mp4",
                     help="the A-roll the words are timed on: pauses are read from its voice "
                          "energy (\"\" = trust the transcript's word edges)")
     ap.add_argument("--out", default="captions.json")
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
     cfg = hfcfg.load(a.config)
     lang = cfg["language"]
     cc = cfg.get("captions", {})
@@ -509,10 +572,11 @@ def main():
     # Width budget: a card is ~68 px of padding plus ~0.53 x font-size per character in
     # a heavy Hebrew face (measured on Heebo 800; lighter weights are narrower, so this is
     # safe). fit_captions.py still measures the real width in Chrome; this just keeps the
-    # splitter from producing a card that will not fit the 880 px safe zone at all.
+    # splitter from producing a card wider than the CENTRED lane (grid.centered_box: 800 px
+    # on Reels) — a wider plate could not sit on the frame centre.
     import grid
-    safe_w = grid.from_config(cfg)["safe_width"]
-    MAX_CHARS = int((safe_w - 68) / (cfg["brand"]["caption_size"] * 0.53))
+    lane_w = grid.from_config(cfg)["max_centered_w"]
+    MAX_CHARS = int((lane_w - 68) / (cfg["brand"]["caption_size"] * 0.53))
 
     words = normalise(load_words(a.words), lang)
     if a.aroll and os.path.exists(a.aroll):
@@ -534,7 +598,7 @@ def main():
               f"build_index.py writes it, run captions.py again (then caption_layer.py).")
 
     cards = split_cards(words, lang, bounds[1:], windows)
-    hidden = [zone_of(c[0][0], windows) >= 0 for c in cards]
+    hidden = [word_zone(c[0], windows) >= 0 for c in cards]
 
     # ---- starts. Visible: first word (minus lead); the first card of a segment snaps back
     # to the segment boundary; never inside a hidden window; strictly increasing.
@@ -570,7 +634,8 @@ def main():
         s0 = starts[k]
         last_end = max(w[1] for w in c)
         if hidden[k]:
-            win = next(((x, y) for x, y in windows if x - FRAME - 1e-6 <= c[0][0] < y), (s0, last_end))
+            zk = word_zone(c[0], windows)
+            win = windows[zk] if zk >= 0 else (s0, last_end)
             nxt = starts[k + 1] if k + 1 < len(cards) else end
             en = min(win[1], nxt) if nxt > s0 else win[1]
             end_by = "hidden"
@@ -597,7 +662,9 @@ def main():
         rows.append(row)
 
     json.dump(rows, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    problems = check_rows(rows, words, windows, bounds, cards, lang, pause_trim, pause_tail)
+    heads = headline_windows(a.hide, a.media) if a.hide else []
+    problems = check_rows(rows, words, windows, bounds, cards, lang, pause_trim, pause_tail,
+                          heads)
 
     vis = [r for r in rows if not r.get("hidden")]
     nh = len(rows) - len(vis)
@@ -615,13 +682,132 @@ def main():
         print("\n  ✗ " + "\n  ✗ ".join(problems))
         return 1
     print("\n  ✓ 1-%d words, no accidental gaps, no overlaps, no card starts inside a hidden "
-          "window, every sentence boundary has a caption change" % MAXW)
+          "window, every sentence boundary has a caption change, every spoken word on screen"
+          % MAXW)
     return 0
 
 
-def check_rows(rows, words, windows, bounds, cards, lang, pause_trim, pause_tail):
+def _norm_tok(w):
+    """A word for comparison: letters and digits only, lower case (punctuation, quotes,
+    maqaf and markup markers gone)."""
+    return re.sub(r"[\W_]+", "", str(w)).lower()
+
+
+def headline_windows(hide_path, media_path):
+    """[(a, b, {normalised words on screen})] for every hidden window whose sources are ALL
+    kinetic headlines (media.json "headlines" ids). Hook worlds and designed moments are
+    not in it: they illustrate a line, they do not spell it."""
+    try:
+        d = json.load(open(hide_path, encoding="utf-8"))
+        media = json.load(open(media_path, encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    heads = {}
+    for h in media.get("headlines") or []:
+        txt = h.get("text")
+        if txt is None and h.get("lines"):
+            txt = " ".join(str(x[0]) for ln in h["lines"] for x in ln)
+        if h.get("id") and txt:
+            heads[h["id"]] = {_norm_tok(t) for t in re.split(r"[\s/]+", str(txt)) if _norm_tok(t)}
+    out = []
+    for (a, b), srcs in zip(d.get("windows") or [], d.get("sources") or []):
+        if srcs and all(x in heads for x in srcs):
+            out.append((float(a), float(b), set().union(*(heads[x] for x in srcs))))
+    return out
+
+
+def unshown_words(rows, words, windows, heads=()):
+    """THE "every word is shown" gate. A spoken word must be on a visible caption, or
+    spoken inside a hidden window (word_zone) — and when that window is a kinetic headline,
+    in the headline's text. Anything else was spoken with nothing on screen saying it (the
+    straddling word: "לחכות" 6.12-6.54 across the hook's end 6.32 was on no card at all).
+    Returns problem strings."""
+    shown = {(round(float(x[0]), 2), x[2]) for r in rows if not r.get("hidden")
+             for x in r.get("words") or []}
+    bad = []
+    for w in words:
+        if (round(float(w[0]), 2), w[2]) in shown:
+            continue
+        if word_zone(w, windows) < 0:
+            bad.append(f"'{w[2]}' ({w[0]:.2f}-{w[1]:.2f}s) is on no visible card and outside "
+                       f"every hidden window")
+            continue
+        for a, b, toks in heads:
+            if a - FRAME - 1e-6 <= w[0] < b - 1e-6 and _norm_tok(w[2]) not in toks:
+                bad.append(f"'{w[2]}' ({w[0]:.2f}s) is spoken under a headline ({a:.2f}-"
+                           f"{b:.2f}s) whose text does not show it — end the headline window "
+                           f"before it, or add the word")
+                break
+    return bad
+
+
+def selftest():
+    """Positive + negative tests of the splitter and the word gate — `captions.py
+    --selftest`. No audio, no config. Exit 1 on a failure."""
+    global MAXW, MAX_CHARS
+    MAXW, MAX_CHARS = 3, 0
+    he = {"code": "he", "direction": "rtl"}
+    fails, n = [], [0]
+
+    def want(name, ok, got=""):
+        n[0] += 1
+        if not ok:
+            fails.append(f"{name}  {got}")
+
+    def ws(text, t0=0.0, step=0.3):
+        return [[round(t0 + i * step, 2), round(t0 + (i + 1) * step - 0.02, 2), w]
+                for i, w in enumerate(text.split())]
+
+    def plain(cards):
+        return [" ".join(x[2] for x in c) for c in cards]
+    # a comma inside a card loses to a split at it …
+    c = plain(split_cards(ws("לחכות שמישהו ייתן לנו הזדמנות, לחכות שיקדמו אותנו בעבודה,"), he))
+    want("no comma inside a card", not any("," in p[:-1] for p in c), c)
+    c = plain(split_cards(ws("אנחנו נותנים לו את השליטה עליהם, וזה מה שאף אחד לא אמר לכם."), he))
+    want("'עליהם, וזה' split at the comma", "עליהם, וזה" not in " | ".join(c), c)
+    # … except when the split would leave a bare 1-word orphan
+    c = plain(split_cards(ws("תודה רבה, חברים"), he))
+    want("orphan keeps the comma inside", c == ["תודה רבה, חברים"], c)
+    # default locked pairs
+    c = plain(split_cards(ws("כי אם אף אחד לא אחראי על ההצלחה שלכם."), he))
+    want("'אף אחד' never split", not any(p.endswith("אף") for p in c), c)
+    want("defaults can be switched off",
+         locked_list({"code": "he", "locked_defaults": False}) == [])
+    want("one default can be unlocked",
+         "כל יום" not in locked_list({"code": "he", "unlocked_phrases": ["כל יום"]}))
+    want("project phrases add", "קלוד קוד" in locked_list({"code": "he", "locked_phrases": ["קלוד קוד"]}))
+    # the straddling word: mostly spoken after the window → the visible side
+    win = [[0.0, 6.32]]
+    w = [[5.54, 5.9, "בעבודה,"], [6.12, 6.54, "לחכות"], [6.54, 6.74, "ליום"], [6.74, 7.14, "חמישי,"]]
+    want("straddler belongs to the visible side", word_zone(w[1], win) == -1)
+    want("a word mostly inside stays hidden", word_zone([6.0, 6.4, "x"], win) == 0)
+    rows_old = [{"hidden": True, "words": w[:2]}, {"words": w[2:]}]
+    want("gate flags a straddler left on a hidden card", len(unshown_words(rows_old, w, win)) == 1,
+         unshown_words(rows_old, w, win))
+    cards = split_cards(w, he, (), win)
+    rows_new = [{"hidden": word_zone(cc[0], win) >= 0, "words": cc} for cc in cards]
+    want("fixed split shows every word", unshown_words(rows_new, w, win) == [],
+         unshown_words(rows_new, w, win))
+    # a word under a headline that the headline does not spell
+    hw = [[10.0, 10.3, "אז"], [10.3, 10.7, "תפסיקו"], [10.7, 11.2, "לחכות"]]
+    heads = [(10.0, 11.4, {"אז", "תפסיקו"})]
+    want("headline gate flags a word it does not show",
+         len(unshown_words([{"hidden": True, "words": hw}], hw, [[10.0, 11.4]], heads)) == 1)
+    heads = [(10.0, 11.4, {"אז", "תפסיקו", "לחכות"})]
+    want("headline gate passes a spelled word",
+         unshown_words([{"hidden": True, "words": hw}], hw, [[10.0, 11.4]], heads) == [])
+    for f in fails:
+        print(f"  ✗ {f}")
+    print(f"  captions selftest: {'FAIL' if fails else 'ok'} ({n[0] - len(fails)}/{n[0]})")
+    return 1 if fails else 0
+
+
+def check_rows(rows, words, windows, bounds, cards, lang, pause_trim, pause_tail, heads=()):
     """The caption gates. Returns a list of problems (empty = pass)."""
     problems = []
+    lost = unshown_words(rows, words, windows, heads)
+    if lost:
+        problems.append(f"{len(lost)} SPOKEN WORD(S) NEVER ON SCREEN: " + "; ".join(lost[:5]))
     over = [r for r in rows if r["n"] > MAXW]
     if over:
         problems.append(f"{len(over)} card(s) over {MAXW} words")

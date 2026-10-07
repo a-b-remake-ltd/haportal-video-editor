@@ -1,6 +1,6 @@
       /* question: a viewer's comment card (KO qcard) — avatar initials, name, and the question
          revealed word by word as it is spoken. On footage it rises from the bottom like a
-         comment, inside the grid; on paper it is a child of the page. */
+         comment, centred on the frame (the ${qw} px lane); on paper it is a child of the page. */
       .m-q { position: absolute; z-index: 45; left: ${qx}px; width: ${qw}px; bottom: ${qbottom}px;
              background: #fff; color: var(--brand-ink); border-radius: 30px; padding: 34px 42px 40px;
              overflow: hidden; direction: ${dir}; opacity: 0;

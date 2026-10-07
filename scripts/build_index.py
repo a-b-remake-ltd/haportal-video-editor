@@ -335,6 +335,9 @@ def build(cfg, media, bounds, end):
     lang = cfg["language"]
     G = grid.from_config(cfg)
     gx0, gy0, gx1, gy1 = G["safe"]
+    # the centred lane (grid.centered_box): x 140-940 on Reels, centred on the FRAME (540).
+    # Cards and captions live in it, so they read as centred next to a centred speaker.
+    lx0, lw = grid.center_lane(G)
     brand_css = ""
     bcss = b.get("css", "brand/brand.css")
     if bcss and os.path.exists(bcss):
@@ -573,7 +576,7 @@ def build(cfg, media, bounds, end):
             slot = beatmap.slot_at(c["start"]) if beatmap and beatmap.BEATS else "std"
             size = f' style="font-size:{c["size"]}px"' if c.get("size") else ""
             expected[f"c{c['i']:02d}"] = [round(c["start"], 3), round(c["dur"], 3)]
-            body.append(f'      <div id="c{c["i"]:02d}" class="clip cap {slot}" '
+            body.append(f'      <div id="c{c["i"]:02d}" class="clip cap {slot}" data-center="content" '
                         f'data-start="{c["start"]}" data-duration="{c["dur"]}" '
                         f'data-track-index="{cap_track}">'
                         f'<span class="p"{size}>{c["text"]}</span></div>')
@@ -667,9 +670,10 @@ def build(cfg, media, bounds, end):
       /* EVERY card surface must set font-family itself — a new class does NOT inherit
          it and the whole card silently renders in the default serif. Name Inter (free,
          OFL), never a commercial system face as the fallback. */
-      /* Cards live inside the Reels safe zone (scripts/grid.py): x {gx0}-{gx1}, y {gy0}-{gy1}.
-         The right edge stops at the like/comment/share rail, not at the frame edge. */
-      .card {{ position: absolute; z-index: 40; left: {gx0}px; width: {gx1 - gx0}px;
+      /* Cards live inside the Reels safe zone (scripts/grid.py): x {gx0}-{gx1}, y {gy0}-{gy1},
+         centred on the FRAME (x {G['center_x']}) in the {lw} px lane x {lx0}-{lx0 + lw}
+         (grid.centered_box): the right edge stays clear of the like/comment/share rail. */
+      .card {{ position: absolute; z-index: 40; left: {lx0}px; width: {lw}px;
         font-family: var(--brand-font), "Inter", sans-serif;
         background:
           radial-gradient(96% 90% at 50% 0%, rgba(var(--brand-primary-rgb),.30), rgba(var(--brand-primary-rgb),0) 70%),
@@ -700,13 +704,16 @@ def build(cfg, media, bounds, end):
          hide svg. Start hidden and drive opacity from the timeline. */
       svg.clip {{ opacity: 0; }}
 
-      /* Captions centre on the SAFE zone (x {G['center_x']}), not on the frame (x 540):
-         the right-hand action rail would otherwise eat the last word. */
-      .cap {{ position: absolute; left: {gx0}px; width: {gx1 - gx0}px; z-index: 50; text-align: center;
-             direction: {lang['direction']};
+      /* Captions centre on the FRAME (x {G['center_x']}) in the {lw} px lane x {lx0}-{lx0 + lw}
+         (grid.centered_box; fit_captions.py keeps every plate inside {lw} px). The lane is
+         laid out RTL whatever the language: a plate that is still too wide then keeps its
+         right edge on {lx0 + lw} and grows LEFT, clear of the action rail — the rule for a
+         wide element. The plate itself carries the language's direction. */
+      .cap {{ position: absolute; left: {lx0}px; width: {lw}px; z-index: 50; text-align: center;
+             direction: rtl;
              font-family: var(--brand-font), "Inter", sans-serif;
              font-weight: 800; line-height: 1.0; }}
-      .cap .p {{ display: inline-block; font-size: {b['caption_size']}px;
+      .cap .p {{ display: inline-block; font-size: {b['caption_size']}px; direction: {lang['direction']};
                 padding: 20px 34px 26px; white-space: nowrap; {grid.caption_css(cfg)} }}
 {slot_css}
       .ltr {{ unicode-bidi: isolate; direction: ltr; }}
@@ -820,7 +827,13 @@ def main():
 
     print(f"  beat map: {BEATS_PATH or '(none found)'}"
           f"  {len(beatmap.BEATS) if beatmap else 0} beats")
-    print(f"  {a.out}  {len(expected)} timed elements, END {end:.3f}s")
+    # two different ends: the A-roll's (the last spoken frame; captions, scenes and SFX
+    # live before it) and the composition's (the outro runs past it). Printing only the
+    # first once read as "the composition is 4 s short".
+    comp_end = OUTRO_PLAN["end"] if OUTRO_PLAN else end
+    print(f"  {a.out}  {len(expected)} timed elements, A-roll ends {end:.3f}s, "
+          f"composition END {comp_end:.3f}s"
+          + (f" (+{comp_end - end:.2f}s outro)" if comp_end > end + 1e-6 else ""))
     print(f"  build/expected.json written — now run:")
     print(f"    python3 scripts/validate.py --expect build/expected.json --html {a.out}")
     return 0

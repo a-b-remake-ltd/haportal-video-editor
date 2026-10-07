@@ -1,6 +1,7 @@
-      /* stamp: a slam (KO stampIn / the ₪0 stamp). The row is a fixed, unrotated box centred on
-         the safe zone; only the inner plate is scaled and rotated by the timeline. */
-      .m-stamp { position: absolute; z-index: 46; left: ${gx0}px; width: ${gw}px; display: flex;
+      /* stamp: a slam (KO stampIn / the ₪0 stamp). The row is a fixed, unrotated box: the
+         centred lane (${lw} px) shifted to the stamp's x — the frame centre by default; only
+         the inner plate is scaled and rotated by the timeline. */
+      .m-stamp { position: absolute; z-index: 46; left: ${lx}px; width: ${lw}px; display: flex;
                  justify-content: center; direction: ${dir};
                  font-family: var(--brand-font), "Inter", sans-serif; }
       .m-st { display: inline-block; padding: 12px 34px 18px; border: 7px solid currentColor;

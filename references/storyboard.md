@@ -62,8 +62,9 @@ Rules for the "on screen" column:
 - Mark which rows are **plants** and which are **payoffs** of a callback.
 - Plain captions are a valid choice for a row. Not every line gets a widget; the strongest do.
 
-Put the table at the top of `scenes.py` as its docstring, so the next session reads the plan
-before the code.
+The table lives in ONE place: `storyboard.md` in the project folder (SKILL.md step 5). A
+short copy at the top of `scenes.py` as its docstring is optional, as a reading aid next to
+the code; when the two disagree, `storyboard.md` wins and the docstring is updated.
 
 ---
 

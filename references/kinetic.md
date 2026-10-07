@@ -67,15 +67,20 @@ the text, do not silence it.
 |---|---|---|
 | ` / ` | line break | a slash between two digits (`24/7`) stays text |
 | `*w*` | keyword | `var(--hl-on-dark)`, 800 |
-| `^w^` | partner | a lighter tint of the keyword colour, 800 |
+| `^w^` | partner | a lighter tint of the keyword colour, 500 |
 | `+w+` | bold | white, 800 |
-| `_w_` | thin | white, 300 |
+| `_w_` | thin | white, 200 |
+| `=w=` | gradient | the closer or the emotional word: a gradient (electric blue → lavender → pink, from the brand tokens), 800 |
 | `~w~` | small line | the whole line at 0.6×, for a lead-in ("הרבה שואלים:") |
 | plain | the style's default | thin for `rollin` / `ko`, bold for `bold` |
 
 Markers may span words (`*פרסונל ברנד*`). A lone trailing marker (`ברנד*`) marks one word.
 Bold is `+`, not `!`, because a Hebrew sentence may end on "!". Check a line with
 `python3 scripts/kinetic.py parse "<markup>"`.
+
+The same markers work in the kit's word stacks (`kit.stack`, the hook opener `intro=`).
+Headlines stay right-aligned at right 160 on the chest (a design choice): they are the one
+exception to the centring rule of `references/grid.md`.
 
 One keyword per headline, two at most (a partner + keyword pair counts as one idea).
 Colour everything and nothing stands out.

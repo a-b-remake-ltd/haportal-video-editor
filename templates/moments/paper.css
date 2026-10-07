@@ -9,7 +9,7 @@
       .m-paper .m-p-wm { position: absolute; overflow: hidden; }
       .m-paper .m-p-wm i { position: absolute; background-size: 100% 100%;
                  background-repeat: no-repeat; }
-      .m-paper .m-p-col { position: absolute; left: ${gx0}px; top: ${gy0}px; width: ${gw}px;
+      .m-paper .m-p-col { position: absolute; left: ${lx}px; top: ${gy0}px; width: ${lw}px;
                  height: ${gh}px; display: flex; flex-direction: column; align-items: center;
                  justify-content: center; gap: 44px; transform-origin: ${col_ox}px 50%; }
       .m-paper .m-p-kicker { font-size: 34px; font-weight: 700; letter-spacing: .06em;

@@ -72,7 +72,7 @@ streak bars puppet leak bricks stamp glow` (`scenes.py list` prints each signatu
 | `ctx.punch([(t, factor), ...])` | punch-in steps (`tl.set` on the footage, factor × the beat scale, 1.00-1.16). **Declare first**: the hook lands on the punch active at its landing |
 | `ctx.state_at(t)` | the footage's (scale, y) at t: beat map × punches × pushes |
 | `ctx.framing` | `build/framing.json`: `head_top, face_cx, face_cy, chin, chest [y0, y1], free_zones`; defaults when absent (`framing["source"]` says which) |
-| `ctx.G`, `ctx.safe`, `ctx.sky` | the Reels grid (`grid.py`); sky = left 90, right 170, top 250, bottom 600 |
+| `ctx.G`, `ctx.safe`, `ctx.sky` | the Reels grid (`grid.py`); sky = left 140, right 140 (800 px centred on the frame, `grid.centered_box`), top 250, bottom 600, or the measured head top − 20 when `build/framing.json` exists |
 | `ctx.tokens`, `ctx.brand` | the colour roles; `brand/brand.json` or None |
 | `ctx.rng(seed)` | seeded `random.Random` for positions (never `Math.random`) |
 | `ctx.note(msg)` | a warning printed with the build |
@@ -104,6 +104,7 @@ a seek-safe `fromTo(…, immediateRender:false)`; hidden starting states live in
 | `s.cam_push(t, d=.6, k=1.08)` | slow push on an emotional beat; holds until the next punch step |
 | `s.cam_sway(t, n=5)` | frame sway, scale lifted to ≥ 1.07 so no black corners show |
 | `s.sfx(name, t, kind="normal", vol=.2)` | an effect; `exempt` impacts stay on the beat, `normal` ones are slid off words |
+| `s.sfx_override(name_or_role, vol=None, t=None, dt=None, kind=None, to=None, mute=False)` | change a sound a component already made (see §4 "Sound") |
 | `s.hide(a=None, b=None)` | hide captions (default: the whole scene) |
 | `s.add(html)`, `s.css(text)`, `s.uid(name)`, `s.n(prefix)` | content, scene CSS, ids |
 
@@ -121,9 +122,12 @@ All return `Html`. Text arguments are escaped, Latin runs isolated, "AI" slabbed
 
 ```python
 k.widget(s, body, title=None, sub=None, lead=None, aside=None, eyebrow=None, eyebrow_icon=None,
-         t_in=None, t_out=None, enter="drop", top=None, name="w", sfx="soft_whoosh")
+         t_in=None, t_out=None, enter="drop", top=None, name="w", sfx=k.DEFAULT)
 ```
-The glass sky widget (left 90, right 170, top 250; glass .84). Header in RTL order: `lead`
+The glass sky widget: 800 px centred on the frame (x 140-940), top 250, glass .84. It must
+end above the head: `ctx.sky["bottom"]` is y 600, or the measured head top − 20, and the grid
+gate fails a widget (`data-sky`) that reaches lower. The height left for the body is passed
+on as the CSS variable `--kt-avail` (the calendar shrinks to it). Header in RTL order: `lead`
 (avatar/badge), title + sub, `aside` (spinner/pill); `eyebrow` = small icon + label instead.
 Enters at `t_in` (default scene start) with `drop` | `slide` | `pop` | `none`, leaves with
 `away` at `t_out` (default end − 0.3; `False` = hard cut).
@@ -132,6 +136,18 @@ Enters at `t_in` (default scene start) with `drop` | `slide` | `pop` | `none`, l
 k.card(s, body, head, meta=None, meta_tone="")      # the dark hook card (used by hook_card)
 k.panel(s, body, top=..., left=..., width=..., t_in=None, enter="fade")  # free-positioned; enters on its own (fade|pop|drop|none)
 ```
+A panel with a `width` and no `left` is placed by the centring rule (below).
+
+### Centring (every component)
+
+Everything centred sits on the **frame** centre, x 540, not on the safe zone's 500: next to a
+centred speaker, x 500 reads as off-centre. One helper decides, `grid.centered_box(width)`:
+an element up to 800 px wide is centred on 540 (its right edge stays ≤ 940, clear of the
+like/comment rail); only a wider one shifts left, just enough to keep its right edge on 940.
+Sky widgets and hook cards are exactly 800 px (x 140-940); chips, pills, the percent, word
+stacks and the hook titles live in that 800 px lane; `today` and `stamp` default to x 540.
+Kinetic headlines are the one exception (right-aligned at right 160). The grid gate measures
+every element marked `data-center` and fails one that is never within ±4 px of its mark.
 
 ### State and status
 
@@ -151,8 +167,9 @@ k.avatars(s, picks=[t1, t2, ...], odd="you?", odd_t=t)          # checks one by 
 k.week(s, hit=4, t0=None, step=.13, pulse_t=None, days=None)      # days light up to day `hit`
 k.phone(s, "The next model", "Pre-order")                          # outline + filling bar + spinner
 k.calendar(s, "The perfect day", labels=["Planned", "Postponed", "Postponed again"],
-           moves=[t1, t2], fly_t=t3, never="Never", never_t=t4)   # event slides a day per move
-k.today(s, "Today", ring_t, big="17")                              # page + hand-drawn red circle
+           moves=[t1, t2], fly_t=t3, never="Never", never_t=t4)   # event slides a day per move;
+                                    # auto-height: at most 262 px and never below the sky zone
+k.today(s, "Today", ring_t, big="17")       # centred page; the red ring circles the day, under the header
 k.dialog(s, "Approval request", "Waiting for someone else…", "You decided", "Wait", "Decide",
          "Decided", show_t, tap_t)                                 # buttons appear, hand taps, green ✓
 k.task(s, "Your success", flip_t, who=("Unassigned", "You"),
@@ -161,7 +178,8 @@ k.waiting_room(s, "Waiting room", "Waiting for the host…", "The host will not 
                leave="Leave", leave_t=None, press_t=None)          # flips red + shakes
 k.notify(s, "Reminder", "Title", "one line", meta="now", icon_name="bell")
 k.chat(s, [("in", "blah blah", t1), ("out", "reply", t2)], typing=(t0, t1))
-k.strike_pills(s, [("waiting", t_in, t_strike), ("blaming", t_in2, t_strike2)])
+k.strike_pills(s, [("waiting", t_in, t_strike), ("blaming", t_in2, t_strike2)], t_out=None)
+                                    # the row leaves with away at t_out (default end − 0.28; False = stays)
 k.stamp(s, "Never", t, x=None, y=None, rot=-8, size=96, tone="red"|"green"|"blue")
 k.hand(s, t_in, t_tap, style="left:40%;top:60%")                   # the tap cursor alone
 k.stack(s, "thin words / *keyword*", top=None, size=104)           # word-by-word stacked opener
@@ -174,6 +192,32 @@ Icons (24 × 24 strokes, drawn for this kit): user users check x plus hourglass 
 ladder calendar clock bell lock unlock phone cursor arrow back up down spark chat mail send cart
 play pause star heart trophy fire rocket brain code robot search home chart money eye key mic
 flag doc gift door link.
+
+### Sound: `sfx=` on every component, and `sfx_override`
+
+Every component that makes a sound takes `sfx=`:
+
+| Value | Effect |
+|---|---|
+| `k.DEFAULT` (the default) or `True` | its own sounds |
+| `None` or `False` | silent |
+| `"pop"` | its MAIN cue (the first role below) plays another sound |
+| `{"name": "pop", "vol": 0.1, "kind": "exempt", "dt": -0.1}` | the main cue re-levelled / re-timed (any subset; `t` sets an absolute time) |
+| `{"slam": {"vol": 0.14, "dt": -0.12}, "lift": None}` | per role; roles not named keep their default |
+
+Roles (main first): widget `in`; today `in, ring`; calendar `move, fly`; dialog `tap, show,
+ding`; task `flip`; waiting_room `fail, leave, press`; chat `msg`; strike_pills `strike, pop`;
+stamp `slam`; bars `slam, fade, lift, burst`; puppet `drop, sway, snap`; light_leak, streak,
+glow_ring `in`; bricks `build, glow`; hook `out, back, cards`; hook_card `in`
+(`scenes.py list` prints them). `vol` is the base volume (0.1-0.45), scaled to the voice later.
+
+After the fact, `s.sfx_override(name_or_role, vol=, t=, dt=, kind=, to=, mute=)` changes every
+matching cue in the scene, and an unknown name is an error that lists what the scene has:
+
+```python
+s.add(k.bars(s, slam_t=ctx.t("הכלא")))
+s.sfx_override("slam", vol=0.14, dt=-0.12)   # a 0.42 slam on the word masked "הכלא"
+```
 
 ### Full-frame overlays (decoration carries `data-grid="bleed"`)
 
@@ -195,11 +239,15 @@ compact (aspect 0.5-1.6); a wide wordmark falls back to the arch, with a note.
 
 ```python
 a = k.hook_card(ctx, "hk-a", start, end, big="the gradient title", head="Card title",
-                meta="small right text" | k.spinner(a) | kit.html(...), meta_tone="wait",
-                enter=None, title_t=None)
+                meta="small right text" | kit.html(...) | (lambda c: k.spinner(c)),
+                meta_tone="wait", enter=None, title_t=None, sfx=k.DEFAULT)
+a.set_meta(k.spinner(a))           # the same, after the card exists
 a.add(...components built on `a`...)
 frags = k.hook(ctx, [a, b, c], out=t_out, back=t_back, intro="opening / *words*")
 ```
+- `meta` that needs the card (a spinner is built on its scene) is a callable taking the
+  card, or set later with `card.set_meta(...)`.
+- Cards are 800 px centred on the frame; the big gradient titles are centred on x 540.
 - `intro` lands word by word on the chest from 0 to `out` (captions hidden).
 - At `out` the footage flies away: scale .34, y −900, radius 60, blur 14, 0.32 s power3.in
   (the y is corrected for the A-roll's own transform-origin so the geometry matches the spec).
@@ -236,3 +284,6 @@ brand gradient pair. `--green --red --amber` stay semantic. Also: `--violet`, `-
 | a state change outside its scene → note | usually `ctx.t` found an earlier occurrence |
 | SFX: moved ≤ 0.3 s off a word, else halved; exempt impacts stay | an effect on a short word swallows it; a tap heard 0.4 s late reads as a bug |
 | missing SFX → nearest library effect, with a note | custom effects per video live in `assets/sfx/` (`references/sound.md`) |
+| `sfx=` on every component, `sfx_override` on the scene | a built-in level once masked a key word with no public way to change it |
+| centred elements on x 540 (`grid.centered_box`), gated ±4 px | centred on the safe zone (500) they read as off-centre next to the speaker |
+| sky widgets end above the measured head (gated) | a 500 px calendar covered the head top |

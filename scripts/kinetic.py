@@ -44,9 +44,10 @@ media.json contract — "headlines": [ ... ], each one:
 MARKUP (one string, verbatim words only — emphasis by weight and colour, never by rewording)
   " / "        line break (a slash between two digits, as in 24/7, is text)
   *w*          keyword: brand colour (var(--hl-on-dark)), 800
-  ^w^          partner: a lighter tint of the keyword colour, 800
+  ^w^          partner: a lighter tint of the keyword colour, 500
   +w+          bold white, 800
-  _w_          thin white, 300
+  _w_          thin white, 200
+  =w=          gradient closer (the emotional word): electric → lavender → pink, 800
   ~w~          a SMALL line (0.6x) — the lead-in ("הרבה שואלים:"); marks the whole line
   plain        the style's default: thin for rollin / ko, bold for bold
   Markers may span words (*פרסונל ברנד*); a lone trailing marker (ברנד*) marks one word.

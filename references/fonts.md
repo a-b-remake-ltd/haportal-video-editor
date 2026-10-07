@@ -55,12 +55,16 @@ Each fetch writes three things to the font dir:
    never be the face of a Hebrew line, or the Hebrew drops to the fallback.
 2. **The "AI" rule.** In Heebo (and most Hebrew sans faces), the capital I has no serifs, so a
    Latin `AI` inside a Hebrew caption reads as **"Al"**. Set every isolated Latin acronym
-   (`AI`, `API`, `CEO`, `GPT`) in **Roboto Slab 800**:
-   `<span class="ltr" style="font-family:'Roboto Slab', serif; font-weight:800">AI</span>`.
+   (`AI`, `API`, `CEO`, `GPT`) in **Roboto Slab**: in a caption at the caption weight + 100
+   (600 in the house 500 caption), in a headline at the word's own weight, 800 in the kit:
+   `<span class="ltr ai">AI</span>`.
    The slab serifs on the I end the ambiguity. Check this in every QA pass.
-3. **Weights that read at phone size.** Captions use 700–900 (house: 800). A 300–400 caption
-   falls apart on a phone at arm's length. Light weights are only for large display words of
-   about 120 px and up.
+3. **Weights that read at phone size.** The house caption is white 62 px at **weight 500**
+   with a soft shadow (`captions.style: "shadow"`, `captions.weight: 500`): at that size and
+   with the shadow, 500 reads cleanly and stays out of the headlines' way. The `"plate"`
+   style (black on a white box, for a bright band) may go heavier, 700–800. Below 500 a
+   caption falls apart on a phone at arm's length. Light weights (200–300) are only for
+   large display words of about 100 px and up (the thin headline words).
 4. **One caption face + at most ONE display face.** Never use two display faces in the same
    reel, because they compete and the reel looks templated. The display face is for punch
    words, cards and the outro tagline, never for captions.

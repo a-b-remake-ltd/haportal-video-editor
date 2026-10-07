@@ -1,6 +1,7 @@
       /* searchbar: a search pill whose query types itself in sync with the speech (Rollin).
          Optional gradient world behind it that dissolves back to the footage while the
-         typing continues. The typed query IS the caption, so captions are hidden. */
+         typing continues. The typed query IS the caption, so captions are hidden. The pill
+         is the centred ${pw} px lane (grid.centered_box). */
       .m-search { position: absolute; inset: 0; z-index: 45; direction: ${dir};
                   font-family: var(--brand-font), "Inter", sans-serif; }
       .m-world { position: absolute; inset: 0;

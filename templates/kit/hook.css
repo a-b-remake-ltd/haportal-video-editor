@@ -16,8 +16,9 @@
       .kt-cb > .kt-empty { margin-top: 90px; }
       .kt-cb > .kt-pg { margin: 20px 10px 0; }
       .kt-art { position: relative; display: grid; place-items: center; margin-top: 34px; }
-      /* the big gradient title under each card: 140 px, centred in the safe zone, y ≈ 1110 */
-      .kt-hbigw { position: absolute; left: ${gx0}px; width: ${gw}px; top: ${hbig_t}px; display: flex;
+      /* the big gradient title under each card: 140 px, centred on the FRAME (the 800 px
+         lane x ${lx}-940, grid.centered_box), y ≈ 1110 */
+      .kt-hbigw { position: absolute; left: ${lx}px; width: ${lw}px; top: ${hbig_t}px; display: flex;
         justify-content: center; }
       .kt-hbig { display: inline-block; font-size: 140px; line-height: 1.08; white-space: nowrap; opacity: 0; }
       .kt-tint { position: absolute; inset: 0; mix-blend-mode: screen; opacity: 0;

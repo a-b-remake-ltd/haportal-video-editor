@@ -99,7 +99,7 @@ FIELDS = {
         "cue": "a spoken word (lands as it begins) or seconds; default = start + 0.17",
         "land": "start (default) | end — land after the cue word instead",
         "rotate": "degrees, default -6",
-        "at": "[x, y] centre, default [500, 400]; or just y",
+        "at": "[x, y] centre, default [540, 400] (the frame centre); or just y",
         "size": "font px, default 108",
     },
     "chips": {
@@ -509,13 +509,18 @@ def _punch_factor(ctx, t):
 def _template(name, ctx, **kw):
     G = ctx["G"]
     gx0, gy0, gx1, gy1 = G["safe"]
+    # the centred lane (grid.centered_box): x 140-940 on Reels, centred on the FRAME (540).
+    # Every centred moment (chips, stamp, checklist, question, search pill, paper column,
+    # fly lines) lives in it — centred on the safe zone (500) they read as off-centre next
+    # to a centred speaker.
+    lx, lw = grid.center_lane(G)
     base = dict(W=ctx["W"], H=ctx["H"], gx0=gx0, gy0=gy0, gx1=gx1, gy1=gy1, gw=gx1 - gx0,
-                gh=gy1 - gy0, cx=G["center_x"], dir=ctx["dir"],
+                gh=gy1 - gy0, cx=G["center_x"], dir=ctx["dir"], lx=lx, lw=lw,
                 bcmax=G["bottom_card_max_h"], bottom=ctx["H"] - gy1,
-                # question card / search pill: the safe zone less 30 px of air each side;
-                # the comment card sits 40 px above the grid's bottom line
-                qx=gx0 + 30, qw=gx1 - gx0 - 60, qbottom=ctx["H"] - gy1 + 40,
-                px=gx0 + 30, pw=gx1 - gx0 - 60, col_ox=G["center_x"] - gx0)
+                # question card / search pill: the centred lane; the comment card sits
+                # 40 px above the grid's bottom line
+                qx=lx, qw=lw, qbottom=ctx["H"] - gy1 + 40,
+                px=lx, pw=lw, col_ox=G["center_x"] - lx)
     base.update(kw)
     return string.Template(open(os.path.join(TEMPLATE_DIR, name + ".css"),
                                 encoding="utf-8").read()).substitute(base)
@@ -783,7 +788,7 @@ def _paper(b):
     rows = parse_lines(e.get("lines")) if e.get("lines") else []
     if rows:
         maxfs = 150 if not (e.get("sheet") or e.get("question")) else 100
-        fs = int(e.get("size") or fit_size(rows, gx1 - gx0 - 60, maxfs))
+        fs = int(e.get("size") or fit_size(rows, grid.center_lane(ctx["G"])[1] - 40, maxfs))
         col.append(_statement(b, rows, f"{b.id}-w", t_min, t_max, fs))
     if e.get("question"):
         col.append(_question_card(b, e["question"], f"{b.id}-q", t_min, True))
@@ -798,7 +803,7 @@ def _paper(b):
         col.append(f'<div class="m-sheet" id="{b.id}-s">{title}{rhtml}</div>')
         # the sheet arrives just before its first row is said — never an empty sheet
         b.up(f"#{b.id}-s", max(t_min, (ts[0] - 0.4) if ts else t_min))
-    inner.append(f'<div class="m-p-col" id="{b.id}-col">{"".join(col)}</div>')
+    inner.append(f'<div class="m-p-col" id="{b.id}-col" data-center="content">{"".join(col)}</div>')
     b.el("div", b.id, "m-paper", T, E - T, "".join(inner))
     b.el("div", f"{b.id}-wa", "m-wipe", T, turn, extra=' data-grid="bleed" data-layout-ignore')
     b.el("div", f"{b.id}-wb", "m-wipe", B, turn, extra=' data-grid="bleed" data-layout-ignore')
@@ -870,7 +875,7 @@ def _question(b):
     gx0, gy0, gx1, gy1 = G["safe"]
     b.css = _css_once(ctx, "question")
     html = _question_card(b, e, b.id, b.T, False)
-    b.el("div", b.id, "m-q", b.T, b.E - b.T, html)
+    b.el("div", b.id, "m-q", b.T, b.E - b.T, html, extra=" data-center")
     b.line(f"// ---- MOMENT {b.id} question {b.T}-{b.E}s")
     b.up(f"#{b.id}", b.T)
     b.line(f'tl.to("#{b.id}", {{ opacity: 0, y: 24, duration: 0.16, ease: "power2.in" }}, '
@@ -893,7 +898,7 @@ def _checklist(b):
     rhtml, ts = _rows_html(b, rows, f"{b.id}-r", b.T + 0.35, b.E - 0.3, fs)
     title = f'<div class="m-c-title">{_word_html(e["title"])}</div>' if e.get("title") else ""
     look = " m-dark" if e.get("look") == "dark" else ""
-    b.el("div", b.id, "m-check" + look, b.T, b.E - b.T, title + rhtml)
+    b.el("div", b.id, "m-check" + look, b.T, b.E - b.T, title + rhtml, extra=" data-center")
     b.line(f"// ---- MOMENT {b.id} checklist {b.T}-{b.E}s")
     b.up(f"#{b.id}", b.T, dy=70)
     b.kill(f"#{b.id}", b.E)
@@ -907,8 +912,9 @@ def _stamp(b):
     b.css = _css_once(ctx, "stamp")
     text = str(e.get("text", "")).strip()
     fs = int(e.get("size", 108))
+    lx, lw = grid.center_lane(G)
     w = _tw(text, fs, 900) + 2 * 34 + 14
-    while w > (gx1 - gx0) * 0.9 and fs > 40:
+    while w > lw * 0.9 and fs > 40:
         fs -= 4
         w = _tw(text, fs, 900) + 2 * 34 + 14
     h = fs * 1.02 + 30 + 14 + (fs * 0.36 * 1.1 + 4 if e.get("sub") else 0)
@@ -934,14 +940,17 @@ def _stamp(b):
                        f"give it ≥ 0.6 s (move end)")
     t0 = max(b.T, land - 0.17)
     # slam from as big as the SAFE ZONE allows — the grid holds even for three frames
-    s0 = round(max(1.0, min(2.3, (gx1 - gx0) * 0.98 / w,
+    s0 = round(max(1.0, min(2.3, lw * 0.98 / w,
                             2 * min(y - gy0, gy1 - y) / max(1.0, h * 1.2))), 3)
     cls = "m-st" + (" m-warn" if e.get("color") == "warn" else "") + \
         (" m-ink" if e.get("on") == "paper" else "")
     sub = f"<small>{_word_html(e['sub'])}</small>" if e.get("sub") else ""
     inner = f'<div class="{cls}" id="{b.id}-s" style="font-size:{fs}px">{_word_html(text)}{sub}</div>'
-    style = f' style="top:{r3(y - h / 2)}px;left:{r3(gx0 + (x - G["center_x"]))}px"'
-    b.el("div", b.id, "m-stamp", t0, b.E - t0, inner, extra=style)
+    # the row is the centred lane shifted so its centre is the stamp's x (default the frame
+    # centre, 540): the plate is centred in it
+    style = f' style="top:{r3(y - h / 2)}px;left:{r3(lx + (x - G["center_x"]))}px"'
+    cen = ' data-center="content"' if abs(x - G["center_x"]) < 0.5 else ""
+    b.el("div", b.id, "m-stamp", t0, b.E - t0, inner, extra=style + cen)
     sel = f"#{b.id}-s"
     b.line(f"// ---- MOMENT {b.id} stamp lands {r3(land)}s")
     b.line(f'tl.fromTo("{sel}", {{ opacity: 0, scale: {s0}, rotation: {rot - 8} }}, '
@@ -970,8 +979,9 @@ def _chips(b):
     y = 250 if at == "top" else 1250 if at == "low" else float(at)
     fs = 54 if len(items) <= 2 else 46 if len(items) == 3 else 40
     tot = sum(_tw(it["text"], fs, 800) + 72 for it in items) + 18 * (len(items) - 1)
-    if tot > G["safe_width"]:
-        b.notes.append(f"{b.id}: chips wrap to two rows ({tot:.0f}px > {G['safe_width']}px)")
+    if tot > G["max_centered_w"]:
+        b.notes.append(f"{b.id}: chips wrap to two rows ({tot:.0f}px > the centred "
+                       f"{G['max_centered_w']}px lane)")
     firsts = [it["text"].split()[0] for it in items]
     auto, _ = sync(firsts, ctx, b.T, b.E)
     html, prev = [], b.T - 0.2
@@ -988,7 +998,8 @@ def _chips(b):
                f'duration: 0.26, ease: "power4.out", immediateRender: false }}, {r3(t)});')
         b.line(f'tl.to("{sel}", {{ scale: 1, duration: 0.2, ease: "back.out(3)" }}, {r3(t + 0.26)});')
         b.cue("pop", t, BELOW["pop"], on_word_ok=True, tag=f"c{i}")
-    b.el("div", b.id, "m-chips", b.T, b.E - b.T, "".join(html), extra=f' style="top:{r3(y)}px"')
+    b.el("div", b.id, "m-chips", b.T, b.E - b.T, "".join(html),
+         extra=f' data-center="content" style="top:{r3(y)}px"')
     b.kill(f"#{b.id}", b.E)
 
 
@@ -996,7 +1007,7 @@ def _searchbar(b):
     ctx, e = b.ctx, b.e
     G = ctx["G"]
     gx0, gy0, gx1, gy1 = G["safe"]
-    px, pw = gx0 + 30, gx1 - gx0 - 60
+    px, pw = grid.center_lane(G)          # the pill: the centred lane, x 140-940
     b.css = _css_once(ctx, "searchbar")
     q = str(e.get("query", "")).strip()
     world = e.get("world", "gradient") != "footage"
@@ -1041,7 +1052,7 @@ def _searchbar(b):
     ico = ('<svg class="m-s-ico" viewBox="0 0 52 52"><circle cx="22" cy="22" r="14"/>'
            '<path d="M32.5 32.5 L45 45"/></svg>')
     qcls = "m-s-q" + (" m-wrap" if wrap else "")
-    pill = (f'<div class="m-s-pill" id="{b.id}-p" style="top:{r3(y)}px'
+    pill = (f'<div class="m-s-pill" id="{b.id}-p" data-center style="top:{r3(y)}px'
             f'{";border-radius:46px" if wrap else ""}">{ico}<div class="{qcls}" '
             f'style="font-size:{fs}px">{"".join(spans)}<span class="m-caret" id="{b.id}-cr"></span>'
             f'</div></div>')
@@ -1076,8 +1087,10 @@ def _searchbar(b):
     b.cue("whoosh_low", b.T, BELOW["whoosh"])
 
 
-_CARD_SPOTS = [(110, 320, -6), (600, 290, 5), (100, 1250, 4), (600, 1290, -5),
-               (80, 560, -3), (640, 1060, 4)]
+# (side, top, rotation, inset from the centred lane's edge): left cards hang from the
+# lane's left edge, right cards from its right edge, so the set is symmetric about x 540
+_CARD_SPOTS = [("l", 320, -6, 10), ("r", 290, 5, 10), ("l", 1250, 4, 0), ("r", 1290, -5, 0),
+               ("l", 560, -3, 30), ("r", 1060, 4, 30)]
 
 
 def _fly(b):
@@ -1115,7 +1128,8 @@ def _fly(b):
     if rows:
         cy = float(e.get("y", 860))
         # kinetic look: every line sized to the width on its own (the keyword line gets big)
-        sizes = [int(e.get("size") or fit_size([row], gx1 - gx0 - 40, 230 if len(row) == 1 else 150, 56))
+        lane_w = grid.center_lane(G)[1]
+        sizes = [int(e.get("size") or fit_size([row], lane_w - 40, 230 if len(row) == 1 else 150, 56))
                  for row in rows]
         hgt = sum(sizes) * 1.04
         st = _statement(b, rows, f"{b.id}-w", t_min, t_max, sizes[0], cls="m-f-lines")
@@ -1124,14 +1138,16 @@ def _fly(b):
         inner.append(st.replace('class="m-f-lines" style="', f'class="m-f-lines" style="top:{r3(cy - hgt / 2)}px;', 1))
     for i, c in enumerate((e.get("cards") or [])[:6]):
         c = c if isinstance(c, dict) else {"text": str(c)}
-        lx, ty, rot = _CARD_SPOTS[i]
+        side, ty, rot, inset = _CARD_SPOTS[i]
         if c.get("img"):
             body = f'<img src="{_esc(c["img"])}" alt="" />'
             cls, wpx = "m-f-card m-img", 230
         else:
             body = _word_html(c.get("text", ""))
             cls, wpx = "m-f-card", _tw(c.get("text", ""), 52, 700) + 76
-        lx = max(gx0 + 10, min(lx, gx1 - wpx - 10))
+        l0, lw0 = grid.center_lane(G)
+        lx = l0 + inset if side == "l" else l0 + lw0 - inset - wpx
+        lx = max(gx0, min(lx, gx1 - wpx))
         inner.append(f'<div class="{cls}" id="{b.id}-c{i}" style="left:{r3(lx)}px;top:{ty}px">{body}</div>')
         t = t_min + 0.09 * i
         # rack focus in; a slow drift for the whole hold (separate properties, no overlap)
@@ -1378,10 +1394,10 @@ PREVIEW_HTML = """<!doctype html>
       video {{ position: absolute; inset: 0; width: {W}px; height: {H}px; object-fit: cover; }}
       #aroll {{ z-index: 20; transform-origin: 50% 30%; }}
       .cap {{ position: absolute; left: {gx0}px; width: {gw}px; z-index: 50; text-align: center;
-              direction: {dir}; font-family: var(--brand-font), "Inter", sans-serif;
+              direction: rtl; font-family: var(--brand-font), "Inter", sans-serif;
               font-weight: 800; line-height: 1.0; top: {cap_top}px; }}
       .cap .p {{ display: inline-block; font-size: {cap_fs}px; padding: 20px 34px 26px;
-                 white-space: nowrap; {cap_css} }}
+                 direction: {dir}; white-space: nowrap; {cap_css} }}
 {css}
     </style>
   </head>
@@ -1559,8 +1575,8 @@ def preview(a):
     html = PREVIEW_HTML.format(
         t0=t0, t1=t0 + end, lang=cfg["language"].get("code", "he"), W=W, H=H, family=family,
         brand_css=brand_css, font_css="\n".join(font_css), css=res["css"], end=end,
-        body="\n".join(body), js="\n".join(res["timeline"]), gx0=G["safe"][0],
-        gw=G["safe_width"], dir=ctx["dir"], cap_top=grid.caption_top(G, ph),
+        body="\n".join(body), js="\n".join(res["timeline"]), gx0=grid.center_lane(G)[0],
+        gw=grid.center_lane(G)[1], dir=ctx["dir"], cap_top=grid.caption_top(G, ph),
         cap_fs=cfg["brand"]["caption_size"], cap_css=grid.caption_css(cfg))
     open(os.path.join(out, "index.html"), "w", encoding="utf-8").write(html)
     json.dump({"entry": sh, "shift": -t0, "hide_captions": res["hide_captions"],

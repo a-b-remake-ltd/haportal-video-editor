@@ -10,8 +10,9 @@ The default is the premium motion-edit card. A user who never sends a note gets 
   a frame. No fade, no pop, no scale. (`captions.max_words: 3`.)
 - **White, 62 px, weight 500, soft shadow, no box** (`captions.style: "shadow"`,
   `brand.caption_size: 62`, `captions.weight: 500`): `text-shadow: 0 2px 12px rgba(0,0,0,.6)`,
-  centred in `left:60px; right:140px` (x 500). It reads on a dark shirt and stays out of the
-  way of the headlines and designed moments, which carry the emphasis.
+  centred on the FRAME, x 540, in the 800 px lane x 140-940 (`grid.centered_box`, see
+  `references/grid.md`). It reads on a dark shirt and stays out of the way of the headlines
+  and designed moments, which carry the emphasis.
 - **On a high-contrast band.** The grid's band is y 1110-1190. `framing_map.py` measures the
   speaker: when that band lands on the chin, the beard or straddles the collar, it moves onto
   the chest (`--apply` writes `captions.center_y` and the reason into config.json). When the
@@ -28,8 +29,10 @@ The default is the premium motion-edit card. A user who never sends a note gets 
 - **Hidden where the frame belongs to something else:** the hook world, every kinetic headline
   window (the headline IS the caption), designed moments marked `hide_captions`, the outro.
 
-`"plate"` (black type on a translucent white plate, weight 800) stays available for bright or
-busy footage, or when a reference uses it:
+`"plate"` (black type on a translucent white plate) is for a bright or busy band, or when a
+reference uses it. `framing_map.py --apply` switches to it when the caption band measures
+bright; set `captions.weight` heavier for it (700-800: a box needs a heavier line than a
+shadow):
 
 ```css
 .cap .p { display:inline-block; color:#0a0a0a; font-size:70px; font-weight:800;
@@ -65,18 +68,30 @@ Generate them, never hand-write them. `scripts/captions.py` implements the split
 2. **Hard break after any sentence-ending word** (`.`, `?`, `!`) — a card must never carry the
    tail of one sentence and the head of the next.
 3. **Soft break** after a comma, or before a clause opener (keep a small per-language
-   `CLAUSE_OPENERS` set), once the card already has ≥2 words.
+   `CLAUSE_OPENERS` set), once the card already has ≥2 words. A comma INSIDE a card costs
+   more than any split at it ("לנו הזדמנות, לחכות" and "עליהם, וזה" read as one phrase
+   across the pause), unless that split would leave a bare 1-word orphan with no
+   punctuation of its own: then the comma stays inside.
 4. **Word ceiling: `captions.max_words` (3 by default).** Hidden-window edges are hard
-   breaks too: a card is either entirely under a headline or entirely outside it.
+   breaks too: a card is either entirely under a headline or entirely outside it. A word
+   belongs to the side where MOST of it is spoken: one that straddles a window's end (it
+   starts 6.12 inside a hook world that ends 6.32 and runs to 6.54) goes on the visible card
+   after the window, which starts on the window's end. By its start alone it went on a
+   hidden card and was never on screen at all.
 5. **No 1-word orphans.** Fold back if the previous card has room; otherwise lend it the
    previous card's last word — **3+2 beats 4+1**.
-6. **Never split a locked phrase** (a brand name, a compound term). List them in
-   `config.json → language.locked_phrases`, either as a string or as a list of words, any
-   length from 2 up to `captions.max_words`:
+6. **Never split a locked phrase** (a brand name, a compound term, a fixed pair). The
+   common Hebrew fixed pairs are locked by default: "אף אחד", "אף פעם", "כל יום", "בכל זאת",
+   "בסופו של דבר". Add your own in `config.json → language.locked_phrases`, either as a
+   string or as a list of words, any length from 2 up to `captions.max_words`:
 
    ```json
-   "locked_phrases": ["קלוד קוד", "Claude Code", ["בינה", "מלאכותית", "יוצרת"]]
+   "locked_phrases": ["קלוד קוד", "Claude Code", ["בינה", "מלאכותית", "יוצרת"]],
+   "unlocked_phrases": ["כל יום"],
+   "locked_defaults": true
    ```
+
+   `unlocked_phrases` drops single defaults; `"locked_defaults": false` drops them all.
 
    The first word may carry a Hebrew prefix and still match ("בקלוד קוד", "ב-Claude Code").
    A phrase longer than `max_words` can never fit on one card, so captions.py says so and
@@ -86,8 +101,10 @@ Generate them, never hand-write them. `scripts/captions.py` implements the split
 ### Measure every plate's WIDTH at build time
 
 `white-space: nowrap` plus a long card can exceed the frame. Render each caption in the
-real brand face with headless Chrome (`getBoundingClientRect`) and fail or downsize anything
-wider than the safe zone (**880 px**). See `scripts/fit_captions.py`.
+real brand face, at the configured weight, with headless Chrome (`getBoundingClientRect`)
+and fail or downsize anything wider than the centred lane (**800 px**: wider, it could not
+sit on x 540). See `scripts/fit_captions.py`. The splitter's own character budget comes
+from the same 800 px, so a card that cannot fit is re-split before it is shrunk.
 
 **Do not try to read overflow off a snapshot.** A white sofa or a bright logo trips a pixel
 detector and sends you chasing a caption bug that is not there.
@@ -108,8 +125,11 @@ The speaker slots are not typed in by hand. `scripts/beats.py` reads them from
 `scripts/grid.py` (band centre minus half the plate height). An analysed reference may move
 the band through `captions.center_y`, which `apply_style.py` clamps into the safe zone.
 `grid.slot_top()` is the ONE function both the builder and the caption layer call.
-Horizontally every plate is centred on **x 500** inside the 880 px safe width, not on the
-frame.
+Horizontally every plate is centred on the **frame, x 540**, inside the 800 px lane
+x 140-940. The lane is laid out right-to-left whatever the language, so a plate that is
+still too wide keeps its right edge on 940 and grows left, clear of the rail.
+`caption_layer.py` measures every rendered plate's ink and fails one more than 4 px off
+centre.
 
 **On a full-frame B-roll shot the caption goes in the MIDDLE (~930), never dropped to the
 lower third.** A caption that dives to the bottom for one beat and jumps back reads as a bug.
@@ -170,6 +190,10 @@ From that one structure, derive:
 4. **No visible card starts inside a hidden window.** Asserted in captions.py, in
    caption_layer.py and in preflight_qa.py. Cards whose words fall inside a window are kept
    in captions.json with `"hidden": true`, so every spoken word stays accounted for.
+5. **Every spoken word is on screen** (a gate in captions.py): on a visible card, or spoken
+   inside a hidden window, and under a kinetic headline it must be in the headline's text
+   (from `media.json`). A hook world or a designed moment illustrates its line instead of
+   spelling it, so its words only have to be inside the window.
 
 **Pauses are read from the audio, not the transcript.** Whisper's word stamps are contiguous:
 it folds every pause into a neighbouring word (measured on an AI-avatar take: a word stamped

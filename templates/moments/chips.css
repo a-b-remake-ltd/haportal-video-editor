@@ -1,6 +1,6 @@
-      /* chips: 2-4 pills popping on the word that names them. RTL row: the first item sits
-         on the RIGHT. Dark brand glass; an "accent" chip takes --hl-on-dark (one per frame). */
-      .m-chips { position: absolute; z-index: 45; left: ${gx0}px; width: ${gw}px; display: flex;
+      /* chips: 2-4 pills popping on the word that names them, centred on the frame (the
+         ${lw} px lane, grid.centered_box). RTL row: the first item sits on the RIGHT. Dark brand glass; an "accent" chip takes --hl-on-dark (one per frame). */
+      .m-chips { position: absolute; z-index: 45; left: ${lx}px; width: ${lw}px; display: flex;
                  flex-wrap: wrap; justify-content: center; gap: 18px 18px; direction: ${dir};
                  font-family: var(--brand-font), "Inter", sans-serif; }
       .m-chip { display: inline-flex; align-items: center; padding: 16px 34px 20px; border-radius: 999px;

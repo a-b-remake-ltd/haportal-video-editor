@@ -29,7 +29,9 @@ Every card keeps its exact slot in the concat list and the pieces sum to its dur
 layer's length — and with it finish.py's overlay — is unchanged. Only pixels go missing.
 
 Gates (exit 1): a visible piece of the layer that starts inside a hidden window, or shows a
-word spoken inside one. Stale input is reported (re-run captions.py) but fixed, not fatal;
+word spoken inside one (captions.word_zone: by where most of the word is spoken), and a
+plate whose INK is not centred on the frame (x 540, grid.centered_box) — measured on the
+rendered stills' alpha, ±4 px. Stale input is reported (re-run captions.py) but fixed, not fatal;
 preflight_qa.py fails a stale captions.json.
 """
 import glob
@@ -50,9 +52,9 @@ PAGE = """<!doctype html><meta charset="utf-8">
   html, body {{ width:{W}px; height:{H}px; background:transparent; overflow:hidden; }}
 {faces}
   .cap {{ position:absolute; left:{left}px; width:{width}px; top:{top}px; text-align:center;
-          direction:{dir}; font-family:"{family}", "Inter", sans-serif;
+          direction:rtl; font-family:"{family}", "Inter", sans-serif;
           line-height:1.0; }}
-  .cap .p {{ display:inline-block; font-size:{size}px; padding:20px 34px 26px;
+  .cap .p {{ display:inline-block; font-size:{size}px; padding:20px 34px 26px; direction:{dir};
              white-space:nowrap; {paint} }}
   .ltr {{ unicode-bidi:isolate; direction:ltr; }}
   .ai {{ font-family:"Roboto Slab", serif; font-weight:{aiw}; letter-spacing:.02em; }}
@@ -185,7 +187,7 @@ def plan_layer(segs, windows, frame=0.04):
                 else:
                     out.append((p0, p1, c, None))
                 continue
-            shown = [w for w in words if capmod.zone_of(w[0], windows) < 0 and w[0] < p1 - 1e-6
+            shown = [w for w in words if capmod.word_zone(w, windows) < 0 and w[0] < p1 - 1e-6
                      and (p0 <= t0 + 1e-6 or w[0] >= p0 - frame)]
             if not shown:
                 out.append((p0, p1, None, None))
@@ -216,9 +218,39 @@ def gate(plan, windows, frame=0.04):
             bad.append(f"c{c['i']:02d} visible from {p0:.2f}s, inside hidden window "
                        f"{win[0]:.2f}-{win[1]:.2f}")
         for w in (shown if shown is not None else (c.get("words") or [])):
-            if capmod.zone_of(w[0], windows) >= 0:
+            if capmod.word_zone(w, windows) >= 0:
                 bad.append(f"c{c['i']:02d} shows '{w[2]}' ({w[0]:.2f}s), a word spoken inside "
                            f"a hidden window — the headline already showed it")
+    return bad
+
+
+def ink_span(png, top, height, W, thr=128):
+    """(x0, x1) of the caption's visible ink in a rendered still: the columns where the
+    alpha reaches `thr` inside the plate's rows, or None for an empty still. Real pixels,
+    not the CSS: the centring gate measures what the viewer sees (a plate the layout
+    centred on the safe zone measured left margin 347 px, right margin 429 px)."""
+    y0 = max(0, int(top) - 10)
+    h = int(height) + 20
+    r = hfcfg.run(["ffmpeg", "-v", "error", "-i", png, "-vf",
+                   f"alphaextract,crop={W}:{h}:0:{y0}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                  text=False)
+    b = r.stdout or b""
+    rows = len(b) // W
+    if not rows:
+        return None
+    hit = [x for x in range(W) if any(b[y * W + x] >= thr for y in range(rows))]
+    return (hit[0], hit[-1] + 1) if hit else None
+
+
+def centring_gate(spans, g, tol=4):
+    """Every visible caption still must sit where grid.centered_box() puts a plate of its
+    width (on x 540 up to 800 px). Returns problems."""
+    bad = []
+    for key, (x0, x1) in sorted(spans.items()):
+        err = grid.centring_error([x0, 0, x1, 1], g)
+        if abs(err) > tol:
+            bad.append(f"{key} not centred: ink x {x0}-{x1} (left margin {x0}px, right margin "
+                       f"{g['width'] - x1}px, off by {err:+.0f}px)")
     return bad
 
 
@@ -250,7 +282,10 @@ def main():
     H = cfg["project"]["height"]
     fps = cfg["project"]["fps"]
     b = cfg["brand"]
-    g = grid.from_config(cfg)          # captions centre on the Reels safe zone, x 500
+    g = grid.from_config(cfg)
+    # captions centre on the FRAME (x 540) in the centred lane, x 140-940 on Reels
+    # (grid.centered_box); fit_captions.py keeps every plate inside the lane's width
+    lane = grid.center_lane(g)
     font_dir = b["font_dir"]            # the project's copy (fonts.ensure fills it)
     import fonts
     fams = [b["font_family"], "Roboto Slab", "Inter"]
@@ -288,7 +323,7 @@ def main():
         hp = os.path.join(html_dir, key + ".html")
         with open(hp, "w", encoding="utf-8") as f:
             f.write(PAGE.format(W=W, H=H, faces=faces, top=top,
-                                left=g["safe"][0], width=g["safe_width"],
+                                left=lane[0], width=lane[1],
                                 dir=cfg["language"]["direction"], family=b["font_family"],
                                 size=c.get("size", b["caption_size"]),
                                 paint=grid.caption_css(cfg), text=text,
@@ -297,9 +332,12 @@ def main():
                                 # looks like an accidental bold
                                 aiw=min(900, int(cfg.get("captions", {}).get("weight", 800)) + 100)))
         shoot(chrome, hp, png, W, H)
+        sp = ink_span(png, top, grid.plate_height(c.get("size", b["caption_size"])), W)
+        if sp:
+            spans[key] = sp
         return png
 
-    made = set()
+    made, spans = set(), {}
     blank = os.path.abspath(blank_png(os.path.join(png_dir, "blank.png"), W, H))
     entries = []
     for p0, p1, c, shown in plan:
@@ -313,9 +351,17 @@ def main():
     shown_cards = {c["i"] for _, _, c, _ in plan if c is not None}
     print(f"  rendered {len(made)} stills for {len(shown_cards)} visible cards"
           f" ({len(caps) - len(shown_cards)} hidden)")
+    # the composition's end: the outro's window is stored open-ended (start → end + 10 s) so
+    # it can never let a card through; printed raw it read "52.32-69.84" on a 59.84 s reel
+    comp_end = caps[-1]["start"] + caps[-1]["dur"] if caps else 0.0
+    if a.outro and os.path.exists(a.outro):
+        try:
+            comp_end = float(json.load(open(a.outro, encoding="utf-8")).get("end") or comp_end)
+        except (OSError, ValueError):
+            pass
     if windows:
         print(f"  hidden over {len(windows)} window(s): "
-              + ", ".join(f"{x:.2f}-{y:.2f}" for x, y in windows))
+              + ", ".join(f"{x:.2f}-{min(y, comp_end):.2f}" for x, y in windows if x < comp_end))
     restarted = [(p0, c, shown) for p0, p1, c, shown in plan if c is not None and shown is not None]
     if stale or cross:
         print(f"  ! captions.json is STALE against {a.hide}: {len(stale)} card(s) start inside "
@@ -353,11 +399,16 @@ def main():
     if dur and abs(float(dur) - want) > 0.12:
         print(f"  ! layer length {float(dur):.2f}s vs caption timeline {want:.2f}s — "
               f"the overlay will drift; check captions.json durations")
+    problems += centring_gate(spans, g)
+    if spans:
+        errs = sorted(abs(grid.centring_error([x0, 0, x1, 1], g)) for x0, x1 in spans.values())
+        print(f"  centring: {len(spans)} still(s) measured on the pixels, worst {errs[-1]:.1f}px "
+              f"off x {g['center_x']}")
     if problems:
         print("  ✗ " + "\n  ✗ ".join(problems))
         return 1
     print("  ✓ no visible caption starts inside a hidden window, none replays a word the "
-          "headline already showed")
+          "headline already showed, every plate centred on the frame")
     return 0
 
 

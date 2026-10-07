@@ -35,13 +35,14 @@ how-to for each part lives in the topic references (`storyboard.md`, `kit.md`, `
 - Copy the raw into the project as `assets/raw.mp4`. Never modify the original.
 - Extract a 16 kHz mono wav for transcription.
 - Measure loudness: `ffmpeg -i raw.mp4 -af ebur128 -f null -` (integrated LUFS) and `volumedetect` (mean dB). AI avatar voices often come in very quiet and peaky (around -36 LUFS, mean -40 dB). This drives SFX scaling (§7) and mastering (§8).
-- Grab the exact last frame as `assets/img/last.png` (`ffmpeg -ss <duration-0.08> -i raw.mp4 -frames:v 1 -update 1 last.png`) and verify the file exists. The outro needs it, and the renderer silently skips missing images.
+- The outro needs the exact last frame of the A-roll. `outro.py` grabs it itself, at build time, as `assets/outro_last.png`, and stops the build when the file is missing (the renderer silently skips missing images). Nothing to do by hand.
 
 ### 1.2 Transcription (MUST cross-check)
-- Primary: `mlx-whisper` with `mlx-community/whisper-large-v3-turbo`, `--language he --word-timestamps True`, plus an `--initial-prompt` glossary of the names the speaker uses: the brand, its products, and the tools mentioned, in both Hebrew and Latin spelling. For example: "<שם המותג>. <שם המוצר>. סוכנים, אוטומציות, וייב קודינג, פרומפט, בינה מלאכותית."
-- Secondary: the Hebrew fine-tuned model `ivrit-ai/whisper-large-v3-turbo-ct2` via `faster-whisper` (`uv run --with faster-whisper --with "av<14" python ...`; the `av<14` pin avoids a `metadata_errors` crash).
+- `scripts/xcheck.py` runs both engines and writes the diff (`src/transcript_diff.md`).
+- Primary (its timings are kept): the Hebrew fine-tuned model `ivrit-ai/whisper-large-v3-turbo-ct2` via `faster-whisper` (run under `uv run --with faster-whisper --with "av<14"` when it is not installed; the `av<14` pin avoids a `metadata_errors` crash).
+- Secondary: `mlx-whisper` with `mlx-community/whisper-large-v3-turbo`, `--language he --word-timestamps True`, plus an `--initial-prompt` glossary of the names the speaker uses: the brand, its products, and the tools mentioned, in both Hebrew and Latin spelling (config `language.glossary`). For example: "<שם המותג>. <שם המוצר>. סוכנים, אוטומציות, וייב קודינג, פרומפט, בינה מלאכותית." Without mlx-whisper it falls back to faster-whisper large-v3. `--primary b` swaps the roles.
 - Diff the two. For every disagreement decide by meaning and context. AI avatars sometimes mispronounce the script ("גדלו" for "גידלו", "עוזר" for "עובר"); captions MUST show the intended, correctly spelled Hebrew, while timings come from the audio. Also correct spelling in captions even if the speaker says it colloquially ("לעלות פוסטים" becomes "להעלות פוסטים").
-- Save `words.json` as `[{"w","s","e"}]` (word, start, end, seconds, 2 decimals). Everything downstream reads from it.
+- `src/words.json` is a list of `[start, end, "word"]` (seconds, then the word, with its punctuation), on the A-roll timeline (`map_words.py`). Everything downstream reads from it.
 - Report to the user every word that was changed and why.
 
 ### 1.3 Framing map (MUST, before designing anything)
@@ -54,11 +55,12 @@ how-to for each part lives in the topic references (`storyboard.md`, `kit.md`, `
 ## 2. Layout: the approved Instagram Reels grid (1080x1920)
 
 - **Hidden by UI:** top 0-220 (reel header); bottom 1520-1920 (username, caption, music); right button column x ≥ 940 at y 880-1520.
-- **Safe zone for every text and object:** x 60-940, y 220-1520. The safe horizontal center is **x ≈ 500, not 540**. Center things inside `left:60px; right:140px`.
-- **Captions:** default band 1110-1190, centered in the safe zone. If that band lands on the speaker's chin or face in this framing, move it down onto the chest (for example 1236-1312) and say so in the report.
-- **Kinetic headlines:** right-aligned with a 160px right margin, on the chest.
+- **Safe zone for every text and object:** x 60-940, y 220-1520.
+- **Centring:** everything centred sits on the FRAME centre, **x 540**: an element up to 800 px wide is centred on 540 (its right edge stays ≤ 940, clear of the rail); only a wider one shifts left, just enough to keep its right edge on 940. One helper, `grid.centered_box(width)`; the 800 px lane is x 140-940 (`left:140px; right:140px`). Centring on the safe zone's middle (x 500) read as off-centre next to a centred speaker. `references/grid.md`.
+- **Captions:** default band 1110-1190, centred on x 540 (plate at most 800 px). If that band lands on the speaker's chin or face in this framing, move it down onto the chest (for example 1236-1312) and say so in the report.
+- **Kinetic headlines:** right-aligned with a 160px right margin, on the chest (the one exception to centring).
 - **Bottom cards:** anchored to the 1520 line and growing upward, max ~300px tall.
-- **Sky widgets:** `left:90px; right:170px; top:250px`, so they live in y 230-600.
+- **Sky widgets:** `left:140px; right:140px; top:250px` (800 px, centred), ending by y 600, and above the measured head top − 20 when the framing map has one.
 - **Paid ads:** Meta's conservative guide is 14% top, 35% bottom, 6% sides. Apply it only when the video is a paid campaign.
 - QA: draw the hidden zones over snapshots and confirm nothing important enters them.
 - **16:9 YouTube footage:** the same language applies (word-by-word headlines, literal UI moments, hard-swap captions, music and SFX rules, QA). Skip the Reels grid. If the raw already carries a designed frame (for example a white border with the logo and an inner picture box), every element MUST stay inside the inner box. Render at the source resolution (4K stays 4K). Put text behind the speaker using a person matte (background removal on the footage segment) so headlines sit between the wall and the person. No outro unless the user asks for one.
@@ -71,7 +73,7 @@ Work line by line through the transcript and write a table: time range, the word
 
 ### 3.1 Structure for a ~55s monologue
 - **Hook (0 to ~6s):** the first words appear word by word as a thin headline on the chest (0.0 to ~1.0s). Then the whole frame shrinks and flies up into a designed world. Two or three cards illustrate the first sentences, about 1.6-1.8s each. Then the frame returns to the speaker through a blue tint. The speaker is off screen for at most ~5s.
-- **Body:** 8-12 designed moments (widgets in the free zone, or full-frame overlays like bars and strings) plus 5-7 kinetic headlines on the punchiest phrases. Plain captions fill the rest.
+- **Body:** 8-12 designed moments (widgets in the free zone, or full-frame overlays like bars and strings) plus 5-7 kinetic headlines on the punchiest phrases. Plain captions fill the rest. The designed moments are mostly per-video kit scenes (`references/kit.md`); the ready-made moments of `references/moments.md` (paper, fly, stamp, chips…, two to four per reel) count among the 8-12, they do not add to them.
 - **Ending:** pay off the callback on the final line, then the outro (if one was asked for).
 
 ### 3.2 Worked example (an invented script, ~22s)
@@ -123,8 +125,8 @@ Glass opacity .84, not .66: lighter glass over a bright sky reads as dull grey.
   - Sizes: 112px base, `.big` 140px, `.huge` 170px.
   - Classes: `.t-thin` weight 200 white (framing words); `.t-bold` 800 #2F9BFF (the keyword); `.t-light` 500 #8CC8FF (partner word); `.t-grad` 800 gradient text `linear-gradient(90deg,#1E8BFF,#C9B8FF 60%,#FF9ECF)` with `background-clip:text` (the closer or the emotional word).
   - Each word is its own inline-block span with **CSS `opacity:0`**. It lands on its spoken timestamp: from opacity .18, `blur(6px) grayscale(1)` to opacity 1, no blur, in 0.22s `power2.out`. No slide, no bounce. The headline hard-cuts away at the end of its window, with no exit animation.
-- **Captions:** 62px, weight 500, white, `text-shadow: 0 2px 12px rgba(0,0,0,.6)`, centered in `left:60px; right:140px`, height 76.
-- **Hook card titles:** 140px `.t-grad`, centered in the safe zone at y≈1110.
+- **Captions:** 62px, weight 500, white, `text-shadow: 0 2px 12px rgba(0,0,0,.6)`, centred on x 540 in `left:140px; right:140px`, height 76. On a bright band, the `plate` style (black on a white box; heavier weight allowed).
+- **Hook card titles:** 140px `.t-grad`, centred on x 540 at y≈1110.
 - **Widget text:** titles 54-56px weight 800; secondary 34-40px at 70-75% white.
 
 ### 4.3 Motion vocabulary (GSAP; all seek-safe, see §9)
@@ -178,7 +180,7 @@ Opt-in: only when there is a logo **and** the user said yes (never on a 16:9 pie
 9. The whole logo slowly scales 1→1.045. Fade to black over the last 0.4s.
 
 **Geometry** (1080x1920 frame; derived per video, never hand-placed):
-- The lockup is the logo itself (`brand/brand.json`, measured by `scripts/brand_from_logo.py`), sized and centred on the safe centre x 500 by `outro.py`. It yields the **opening on screen**: its width `w_open` and its top-centre `q`.
+- The lockup is the logo itself (`brand/brand.json`, measured by `scripts/brand_from_logo.py`), sized and centred on the frame centre x 540 by `outro.py` (the centring rule above; a lockup wider than 800 px shifts left to clear the rail). It yields the **opening on screen**: its width `w_open` and its top-centre `q`.
 - The door: centred on the face, with top `T`; door width `w_door` (≈1.95 × face width, 440-600px).
 - Scale: `s = w_open / w_door` (e.g. a 92px opening and a 540px door → 0.17).
 - Translation: with transform-origin `o = (ox, oy)` (the door centre) and the door's top-centre `p = (doorCenterX, T)`, pin p onto q:
@@ -242,10 +244,10 @@ Targets (voice above music): a typical quiet AI-avatar monologue sits at 14 dB i
 
 **A typical quiet, peaky AI-avatar voice** (around −36 LUFS):
 ```bash
-ffmpeg -i raw-render.mp4 -vn -af "volume=20dB,acompressor=threshold=0.06:ratio=3:attack=4:release=140:makeup=1" -c:a pcm_s24le c.wav
+ffmpeg -i renders/render.mp4 -vn -af "volume=20dB,acompressor=threshold=0.06:ratio=3:attack=4:release=140:makeup=1" -c:a pcm_s24le c.wav
 I=$(ffmpeg -i c.wav -af ebur128 -f null - 2>&1 | grep -A3 Summary | grep 'I:' | awk '{print $2}')
 G=$(python3 -c "print(round(-12.8-($I),2))")
-ffmpeg -i raw-render.mp4 -i c.wav -map 0:v -map 1:a -c:v copy \
+ffmpeg -i renders/render.mp4 -i c.wav -map 0:v -map 1:a -c:v copy \
   -af "aresample=192000,volume=${G}dB,alimiter=limit=0.84:attack=2:release=60:level=false,aresample=48000" \
   -c:a aac -b:a 320k -movflags +faststart master.mp4
 ```
@@ -277,7 +279,7 @@ The skill renders with HyperFrames. A port to another renderer maps each rule to
 7. **Assets:** fonts, GSAP and logos are all local. The lint error `missing_local_asset` is fatal: fix it, never ignore it.
 8. **Build with a generator:** a Python builder (`scripts/build_index.py`) writes `index.html`, computes caption durations from `words.json`, places and slides SFX, measures the voice, and emits the timeline. Keep everything reproducible: re-running the build plus render must rebuild the exact same video.
 9. **Lint after every build:** 0 errors. Read the warnings (overlaps and missing assets matter; nested-structure and file-size warnings can be ignored).
-10. **Render:** `npx hyperframes render --quality delivery --fps <native> -o renders/raw-render.mp4`.
+10. **Render:** `HF_VIDEO_COVERAGE_THRESHOLD=0 npx hyperframes render --quality high --fps <project.fps> --video-bitrate 32M --output renders/render.mp4` (exactly as in SKILL.md; `--fps` always, or the render falls back to 30), then `scripts/finish.py renders/render.mp4 --out renders/final.mp4` masters it.
 
 ---
 

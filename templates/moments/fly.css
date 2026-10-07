@@ -4,7 +4,7 @@
       .m-fly { position: absolute; inset: 0; z-index: 18; overflow: hidden; direction: ${dir};
                font-family: var(--brand-font), "Inter", sans-serif; }
       .m-fly .m-f-in { position: absolute; inset: 0; transform-origin: ${cx}px 50%; }
-      .m-fly .m-f-lines { position: absolute; left: ${gx0}px; width: ${gw}px; text-align: center;
+      .m-fly .m-f-lines { position: absolute; left: ${lx}px; width: ${lw}px; text-align: center;
                color: #fff; line-height: 1.04; }
       .m-fly .m-ln { white-space: nowrap; }
       .m-fly .m-k { background: linear-gradient(100deg, var(--hl-on-dark) 10%,

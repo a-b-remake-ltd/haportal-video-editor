@@ -28,9 +28,11 @@ device that makes that line visible. Never the other way round.
 
 ### How many
 
-**Two to four per reel, each with a reason.** A 60 s reel: one `fly` or `paper` (the
-structural one), one or two content moments (`question`, `checklist`, `searchbar`, `stamp`,
-`chips`) and `punch` steps as needed. Never filler: if you cannot name the sentence a moment
+**Two to four ready-made moments per reel, each with a reason.** They are a SUBSET of the
+reel's 8-12 designed moments (SKILL.md, `references/house-spec.md` §3.1): the rest are the
+per-video scenes you build on the kit (`references/kit.md`). A 60 s reel might take one `fly`
+or `paper` (the structural one), one or two content moments (`question`, `checklist`,
+`searchbar`, `stamp`, `chips`) from here, `punch` steps as needed, and 6-9 kit scenes. Never filler: if you cannot name the sentence a moment
 serves, delete it. Never two structural moments back to back. The speaker stays on screen
 nearly always (`references/layout.md`): `paper`, `fly` and a gradient `searchbar` take him off
 screen, so together they should stay under ~25 % of the runtime.
@@ -110,7 +112,7 @@ string is cued on its first word; `cue` may be a word or seconds. Captions stay 
 
 ```json
 {"id": "m4", "type": "stamp", "start": 9.60, "end": 10.75,
- "text": "חינם", "color": "brand", "cue": "חינם", "at": [500, 400]}
+ "text": "חינם", "color": "brand", "cue": "חינם", "at": [540, 400]}
 ```
 
 Lands as its cue word BEGINS (0.06 s before the onset, so the slam sound sits in the gap before
@@ -118,7 +120,7 @@ the word, never on it; `"land": "end"` lands after the word instead), from as bi
 zone allows, with a rotation (`rotate`, default −6), a small decaying shake and a slow push.
 Give it ≥ 0.6 s of hold after landing (the build warns). `color`: `brand` (`--hl-on-light` on a paper plate) or `warn` (`--brand-warn`, a signal
 red when the brand defines none). `on: "paper"` drops the plate (ink only). Default position
-x 500, y 400: above most heads. **Move it (`at`) to where this frame is free**; never on the
+x 540 (the frame centre), y 400: above most heads. **Move it (`at`) to where this frame is free**; never on the
 face.
 
 ### chips — pills on cue
@@ -190,7 +192,10 @@ are searched **in order** inside the moment's window; a token may match two spok
 
 ## 4. Grid, brand, fonts
 
-- Everything readable inside x 60-940, y 220-1520, centred on x 500. Decoration that is meant
+- Everything readable inside x 60-940, y 220-1520. Everything centred sits on the FRAME
+  centre, x 540, in the 800 px lane x 140-940 (`grid.centered_box`, `references/grid.md`):
+  chips, the stamp, the checklist and question cards, the search pill, the paper column and
+  the fly lines; the fly cards hang symmetrically from the lane's edges. Decoration that is meant
   to bleed (the paper frame, the watermark, the gradient world, the hairline) is marked
   `data-grid="bleed"`. `grid.py check index.html` must pass with the moments in.
 - Colours only from the brand tokens: paper/sheets/cards on light use `--brand-paper`,

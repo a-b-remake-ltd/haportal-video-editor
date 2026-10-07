@@ -28,7 +28,9 @@ The ctx (what scenes.py gets)
   ctx.scene(id, start, end, layer="front")      a kit Scene
   ctx.punch([(t, factor), ...])   punch-in steps (tl.set on the footage); declare them FIRST
   ctx.state_at(t)                 the footage's (scale, y) at t (beats × punches × pushes)
-  ctx.G, ctx.safe, ctx.sky, ctx.W, ctx.H, ctx.fps, ctx.end, ctx.dir
+  ctx.G, ctx.safe, ctx.W, ctx.H, ctx.fps, ctx.end, ctx.dir
+  ctx.sky                         the sky zone: left/right 140 (800 px centred on x 540),
+                                  top 250, bottom 600 or the measured head top − 20
   ctx.framing                     build/framing.json (head_top, face_cx/cy, chin, chest, free_zones)
   ctx.tokens, ctx.brand           kit colour roles; brand/brand.json (or None)
   ctx.rng(seed)                   a seeded random.Random for positions (never Math.random)
@@ -84,8 +86,16 @@ class Ctx:
         self.G = grid.from_config(cfg)
         self.safe = self.G["safe"]
         gx0, gy0, gx1, _ = self.safe
-        # the sky widget zone (spec §2): left 90, right 170, top 250 → y 230-600
-        self.sky = {"left": gx0 + 30, "right": self.W - (gx1 - 30), "top": gy0 + 30, "bottom": 600}
+        self.framing = kit.load_framing(root)
+        # the sky widget zone (spec §2): 800 px centred on the FRAME (grid.centered_box:
+        # x 140-940, so left 140, right 140), top 250, bottom y 600 — or, on a MEASURED
+        # framing, 20 px above the head when that is higher (a widget must never cover it)
+        sx0, sx1 = grid.centered_box(self.G["max_centered_w"], gy0, 600, self.G)
+        bottom = 600
+        if self.framing.get("source") != "default":
+            bottom = min(bottom, int(self.framing["head_top"]) - 20)
+        self.sky = {"left": round(sx0), "right": round(self.W - sx1), "top": gy0 + 30,
+                    "bottom": max(gy0 + 30 + 200, bottom)}
         self.end = float(end) if end is not None else None
         if words is None:
             wp = os.path.join(root, "src", "words.json")
@@ -94,7 +104,6 @@ class Ctx:
         self._n = [moments._norm(w) for _, _, w in self.words]
         self.brand = moments.load_brand_json(cfg, root)
         self.tokens = kit.tokens(self.brand)
-        self.framing = kit.load_framing(root)
         self.foot = kit.FOOT
         # build_index.py gives #aroll transform-origin 50% 30%
         self.origin_y = 0.30 * self.H
@@ -581,10 +590,94 @@ def build(ctx):
 '''
 
 
+# ==================================================================== selftest
+def selftest():
+    """Positive + negative tests of the kit fixes — `scenes.py selftest`. A synthetic
+    transcript, no media, no Chrome. Exit 1 on a failure."""
+    import tempfile
+    fails, n = [], [0]
+
+    def want(name, ok, got=""):
+        n[0] += 1
+        if not ok:
+            fails.append(f"{name}  {got}")
+    words = [[0.2 * i, 0.2 * i + 0.18, w] for i, w in enumerate(
+        "גידלו אותנו לחכות וזה בדיוק הכלא שבנו לנו תפסיקו לחכות תפסיקו להאשים".split())]
+    root = tempfile.mkdtemp(prefix="scenes_selftest_")
+    cfg = hfcfg.load(None)
+    ctx = Ctx(cfg, {}, 12.0, None, root, words)
+    k = kit
+    # the sky is centred on the frame: left == right
+    want("sky centred (left == right)", ctx.sky["left"] == ctx.sky["right"] == 140, ctx.sky)
+    # every catalogue entry has a description (hook_card printed an empty one)
+    empty = [nm for nm, d in kit.catalogue() if not d]
+    want("no empty catalogue line", not empty, empty)
+    # sfx=: default, mute, rename, per-role, and the override
+    s = ctx.scene("b1", 0.5, 2.0)
+    s.add(k.bars(s, slam_t=ctx.t("הכלא")))
+    want("bars default slam 0.42", [c["base_vol"] for c in s._sfx if c.get("role") == "slam"] == [0.42])
+    s.sfx_override("bars", vol=0.14, dt=-0.12)
+    c = [c for c in s._sfx if c.get("role") == "slam"][0]
+    want("sfx_override re-levels and moves", c["base_vol"] == 0.14 and abs(c["t"] - (ctx.t("הכלא") - 0.14)) < 1e-6, c)
+    try:
+        s.sfx_override("nope", vol=0.1)
+        want("sfx_override on a missing cue is an error", False)
+    except SystemExit:
+        want("sfx_override on a missing cue is an error", True)
+    s = ctx.scene("b2", 0.5, 2.0)
+    s.add(k.bars(s, slam_t=1.0, sfx=None))
+    want("sfx=None mutes", s._sfx == [], s._sfx)
+    s = ctx.scene("b3", 0.5, 2.0)
+    s.add(k.bars(s, slam_t=1.0, lift_t=1.6, sfx={"slam": {"vol": 0.1}, "lift": None}))
+    want("per-role sfx", [(c["role"], c["base_vol"]) for c in s._sfx] == [("slam", 0.1)], s._sfx)
+    s = ctx.scene("w1", 0.5, 2.0)
+    s.add(k.widget(s, "x", title="t", sfx="pop"))
+    want("sfx='name' swaps the main cue", [c["name"] for c in s._sfx] == ["pop"], s._sfx)
+    try:
+        s2 = ctx.scene("w2", 0.5, 2.0)
+        k.widget(s2, "x", sfx={"bogus": 1})
+        want("unknown sfx role is an error", False)
+    except SystemExit:
+        want("unknown sfx role is an error", True)
+    # strike_pills leave: an away on the row before the scene end (it had no exit)
+    s = ctx.scene("sp", 3.0, 5.0)
+    s.add(k.strike_pills(s, [("לחכות", 3.2, 3.6)]))
+    want("strike_pills exits", any(ln.startswith("away(") and "sp-sprow" in ln for ln in s.lines), s.lines)
+    s = ctx.scene("sp2", 3.0, 5.0)
+    s.add(k.strike_pills(s, [("לחכות", 3.2, 3.6)], t_out=False))
+    want("strike_pills t_out=False keeps it", not any("sp2-sprow" in ln and ln.startswith("away(")
+                                                       for ln in s.lines))
+    # hook_card meta as a callable (the spinner needs the card)
+    hc = k.hook_card(ctx, "hk", 0.6, 2.0, big="x", head="y", meta=lambda c: k.spinner(c))
+    want("hook_card meta callable", "kt-spin" in str(hc.meta), hc.meta)
+    hc2 = k.hook_card(ctx, "hk2", 0.6, 2.0, big="x", head="y")
+    hc2.set_meta(k.spinner(hc2))
+    want("card.set_meta", "kt-spin" in str(hc2.meta))
+    # today: centred page, ring under the header
+    s = ctx.scene("td", 1.0, 3.0)
+    h = k.today(s, "יום", 1.5, big="היום")
+    want("today page centred (left 330)", re.search(r"left:330(\.0)?px", h) is not None, h[:120])
+    css = kit.css(ctx)
+    want("ring starts under the header", ".kt-ring { position: absolute; left: 16px; top: 120px" in css)
+    want("calendar height follows --kt-avail", "min(262px, var(--kt-avail, 262px))" in css)
+    # a measured low head shrinks the sky; the widget passes the height on
+    os.makedirs(os.path.join(root, "build"), exist_ok=True)
+    json.dump({"head_top": 560}, open(os.path.join(root, "build", "framing.json"), "w"))
+    ctx2 = Ctx(cfg, {}, 12.0, None, root, words)
+    want("sky ends 20 px above a measured head", ctx2.sky["bottom"] == 540, ctx2.sky)
+    s = ctx2.scene("cw", 1.0, 3.0)
+    h = k.widget(s, k.calendar(s, "ev"), eyebrow="יומן")
+    want("calendar widget gets --kt-avail", "--kt-avail:154px" in h, re.findall(r"--kt-avail:\d+px", h))
+    for f in fails:
+        print(f"  ✗ {f}")
+    print(f"  scenes/kit selftest: {'FAIL' if fails else 'ok'} ({n[0] - len(fails)}/{n[0]})")
+    return 1 if fails else 0
+
+
 # ========================================================================= CLI
 def main():
     ap = hfcfg.arg_parser(__doc__)
-    ap.add_argument("cmd", choices=["list", "words", "plan", "example"])
+    ap.add_argument("cmd", choices=["list", "words", "plan", "example", "selftest"])
     ap.add_argument("a", nargs="?", type=float)
     ap.add_argument("b", nargs="?", type=float)
     ap.add_argument("--media", default="media.json")
@@ -592,6 +685,8 @@ def main():
     if a.cmd == "example":
         print(EXAMPLE)
         return 0
+    if a.cmd == "selftest":
+        return selftest()
     if a.cmd == "list":
         print("components (scripts/kit.py; API in references/kit.md):")
         for n, d in kit.catalogue():
@@ -601,6 +696,11 @@ def main():
             import inspect
             sig = str(inspect.signature(kit.RECIPES[n])).replace("(ctx, ", "(")
             print(f"  {n:14s} {sig}")
+        print("\nsfx= roles (main cue first; sfx=None mutes, sfx=\"name\" or {name, vol, kind, dt}"
+              " changes the main cue, {role: ...} one cue; Scene.sfx_override(name_or_role, "
+              "vol=, t=, dt=, kind=, to=, mute=) after the fact):")
+        for n, roles in sorted(kit.SFX_ROLES.items()):
+            print(f"  {n:14s} {', '.join(roles)}")
         print("\nicons: " + ", ".join(sorted(kit.ICONS)))
         return 0
     cfg = hfcfg.load(a.config)

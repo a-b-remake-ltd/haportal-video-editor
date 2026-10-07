@@ -1,7 +1,8 @@
-      /* checklist: the bottom card (KO .bc) — anchored to the grid's bottom line (y ${gy1}),
+      /* checklist: the bottom card (KO .bc) — centred on the frame in the ${lw} px lane
+         (grid.centered_box), anchored to the grid's bottom line (y ${gy1}),
          growing UP, at most ${bcmax} px, so it ends under the caption band and never covers
          the face. Paper look by default; "dark" = the brand card gradient. */
-      .m-check { position: absolute; z-index: 45; left: ${gx0}px; width: ${gw}px; bottom: ${bottom}px;
+      .m-check { position: absolute; z-index: 45; left: ${lx}px; width: ${lw}px; bottom: ${bottom}px;
                  max-height: ${bcmax}px; overflow: hidden; border-radius: 22px; padding: 24px 36px 26px;
                  background: var(--brand-paper); color: var(--brand-ink); direction: ${dir};
                  font-family: var(--brand-font), "Inter", sans-serif; opacity: 0;

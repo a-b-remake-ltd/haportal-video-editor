@@ -67,8 +67,9 @@ Grouped by phase. The section reference tells you where the fix lives.
 
 - [ ] **Blank frames between captions.** One track; each card runs to the next start.
       `captions.md`
-- [ ] **A stroked white caption, two lines, or 5+ words.** Black on a white plate, ONE line,
-      3–4 words. `captions.md`
+- [ ] **A stroked caption, two lines, or 4+ words.** White 62 px weight 500 with a soft
+      shadow, ONE line, 1–3 words; a black-on-white plate only when the band is bright
+      (`framing_map.py --apply` switches it). `captions.md`
 - [ ] **A caption dropped to the lower third over full-frame B-roll.** Centre it at ~930.
       `captions.md`
 - [ ] **A caption plate on the eyes or mouth.** An opaque plate is far less forgiving than
@@ -80,10 +81,24 @@ Grouped by phase. The section reference tells you where the fix lives.
 - [ ] **A caption slot table that disagrees with the beat map, or kept in two places.** Derive
       the slot from the beat; one module, imported by both builders. `captions.md`
 - [ ] **A readable element or logo outside the Reels safe zone** (x 60–940, y 220–1520), or a
-  block centred on x 540 instead of 500. `python3 scripts/grid.py check index.html` must pass.
-      `captions.md` / `layout.md`
+      centred block NOT on the frame centre x 540 (up to 800 px wide; only a wider one
+      shifts left to keep its right edge on 940). `python3 scripts/grid.py check index.html`
+      must pass (it measures every `data-center` element, ±4 px). `grid.md`
 - [ ] **A headline reordered by RTL bidi** because it contains Latin or `$` / `%`.
       `captions.md`
+- [ ] **A comma inside a caption card** ("לנו הזדמנות, לחכות"). Split at the comma unless it
+      leaves a bare 1-word orphan. `captions.md`
+- [ ] **A spoken word on no card** (it straddled a hidden window's end). captions.py gates
+      it. `captions.md`
+
+## Kit and designed moments
+
+- [ ] **A sky widget over the head** (a tall calendar). The grid gate checks every widget
+      against the measured head top − 20. `kit.md`
+- [ ] **A built-in SFX masking a word** (a bars slam on "הכלא"). Re-level it with `sfx=` or
+      `s.sfx_override(...)`, never by editing the cue list. `kit.md`
+- [ ] **A widget or row that never leaves** (it hard-cuts at the scene end). `strike_pills`
+      takes `t_out`; every widget has `away`. `kit.md`
 
 ## Graphics
 

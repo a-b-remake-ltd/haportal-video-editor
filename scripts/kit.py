@@ -535,10 +535,52 @@ class Scene:
         self._footage(t, t1)
 
     # ---- sound, captions
-    def sfx(self, name, t, kind="normal", vol=0.2):
+    def sfx(self, name, t, kind="normal", vol=0.2, role=None, comp=None):
         """kind "exempt": a deliberate impact that must stay on its beat (bars, stamps, hook
-        whooshes); "normal": slid off any word it would mask (scripts/scenes.py)."""
-        self._sfx.append({"name": str(name), "t": self.at(t), "kind": kind, "base_vol": float(vol)})
+        whooshes); "normal": slid off any word it would mask (scripts/scenes.py). role/comp
+        name the component cue it came from, so sfx_override() can find it."""
+        if kind not in ("normal", "exempt"):
+            raise KitError(f"kit: {self.id}: sfx kind {kind!r} — normal | exempt")
+        cue = {"name": str(name), "t": self.at(t), "kind": kind, "base_vol": float(vol)}
+        if role:
+            cue["role"], cue["comp"] = str(role), str(comp or "")
+        self._sfx.append(cue)
+
+    def sfx_override(self, name, vol=None, t=None, dt=None, kind=None, to=None, mute=False):
+        """Change a built-in sound AFTER the component made it — the public way to re-level,
+        move, swap or mute one. `name` is the cue's sound ("bars") or its role ("slam").
+
+            s.add(k.bars(s, slam_t=t("הכלא")))
+            s.sfx_override("bars", vol=0.14, dt=-0.12)   # quieter, attack before the word
+
+        vol = the base volume (0.1-0.45; scaled to the voice later), t = a new time (seconds
+        or a word), dt = a shift, kind = normal | exempt, to = another sound name, mute =
+        drop it. WHY: a bars slam at its built-in 0.42 masked the key word "הכלא" and the
+        only fix was editing the private cue list. Every matching cue in the scene changes;
+        no match is an error that lists what the scene has."""
+        hit = [c for c in self._sfx if c["name"] == name or c.get("role") == name]
+        if not hit:
+            have = ", ".join(sorted({f"{c['name']}" + (f" (role {c['role']})" if c.get("role") else "")
+                                     for c in self._sfx})) or "none"
+            raise KitError(f"kit: {self.id}: sfx_override({name!r}) matches no cue — this scene "
+                           f"has: {have}. Call it after the component that makes the sound.")
+        if kind is not None and kind not in ("normal", "exempt"):
+            raise KitError(f"kit: {self.id}: sfx_override kind {kind!r} — normal | exempt")
+        for c in hit:
+            if mute:
+                self._sfx.remove(c)
+                continue
+            if vol is not None:
+                c["base_vol"] = float(vol)
+            if t is not None:
+                c["t"] = self.at(t)
+            if dt is not None:
+                c["t"] = r3(c["t"] + float(dt))
+            if kind is not None:
+                c["kind"] = kind
+            if to is not None:
+                c["name"] = str(to)
+        return self
 
     def hide(self, a=None, b=None):
         """Hide the captions over [a, b] (default: the whole scene)."""
@@ -554,6 +596,79 @@ class Scene:
                 "z": self.z, "cls": self.cls}
 
 
+# ======================================================================= sound
+class _Default:
+    def __repr__(self):
+        return "DEFAULT"
+
+
+DEFAULT = _Default()     # "the component's own sound" — the default of every sfx= argument
+_SFX_FIELDS = {"name", "vol", "kind", "t", "dt"}
+
+
+class Sfx:
+    """A component's sfx= argument, resolved per cue ROLE. Every component that makes a
+    sound takes sfx= and routes each of its cues through one of these:
+
+      sfx=DEFAULT (or True)     its own sounds
+      sfx=None (or False)       silent
+      sfx="pop"                 its MAIN cue (the first role) plays "pop" instead
+      sfx={"name": "pop", "vol": 0.1, "kind": "exempt", "dt": -0.1}
+                                the main cue, re-levelled / re-timed (any subset of keys)
+      sfx={"slam": {"vol": 0.14, "dt": -0.12}, "lift": None}
+                                per role; roles not named keep their default
+
+    WHY: the components' built-in levels are a good start, not a law — a bars slam at its
+    base 0.42 masked the key word "הכלא", and there was no public way to change it."""
+
+    def __init__(self, s, arg, comp, roles):
+        self.s, self.comp, self.roles = s, comp, tuple(roles)
+        self.map = {}
+        self.mute = arg is None or arg is False
+        if arg is DEFAULT or arg is True or self.mute:
+            return
+        if isinstance(arg, str):
+            self.map[self.roles[0]] = {"name": arg}
+        elif isinstance(arg, dict) and set(arg) <= _SFX_FIELDS:
+            self.map[self.roles[0]] = dict(arg)
+        elif isinstance(arg, dict) and set(arg) <= set(self.roles):
+            for k, v in arg.items():
+                self.map[k] = (None if v is None or v is False else
+                               {"name": v} if isinstance(v, str) else dict(v))
+                if isinstance(self.map[k], dict) and not set(self.map[k]) <= _SFX_FIELDS:
+                    raise KitError(f"kit: {comp} sfx[{k!r}] keys {sorted(self.map[k])} — use "
+                                   f"{sorted(_SFX_FIELDS)}")
+        else:
+            raise KitError(f"kit: {comp} sfx={arg!r} — None (mute), a sound name, a dict of "
+                           f"{sorted(_SFX_FIELDS)}, or per role {{{', '.join(self.roles)}: ...}}")
+
+    def __call__(self, role, name, t, kind="normal", vol=0.2):
+        """Emit the cue for `role` (default name/time/kind/vol unless overridden)."""
+        if role not in self.roles:
+            raise KitError(f"kit: {self.comp}: internal — undeclared sfx role {role!r}")
+        if self.mute:
+            return
+        o = self.map.get(role, {})
+        if o is None:
+            return
+        t = self.s.at(o["t"]) if "t" in o else self.s.at(t)
+        t = r3(t + float(o.get("dt", 0.0)))
+        self.s.sfx(o.get("name", name), t, o.get("kind", kind), float(o.get("vol", vol)),
+                   role=role, comp=self.comp)
+
+
+# The roles each component's sfx= understands (main cue first) — `scenes.py list` prints it.
+SFX_ROLES = {
+    "widget": ("in",), "today": ("in", "ring"), "calendar": ("move", "fly"),
+    "dialog": ("tap", "show", "ding"), "task": ("flip",),
+    "waiting_room": ("fail", "leave", "press"), "chat": ("msg",),
+    "strike_pills": ("strike", "pop"), "stamp": ("slam",),
+    "bars": ("slam", "fade", "lift", "burst"), "puppet": ("drop", "sway", "snap"),
+    "light_leak": ("in",), "streak": ("in",), "bricks": ("build", "glow"),
+    "glow_ring": ("in",), "hook": ("out", "back", "cards"), "hook_card": ("in",),
+}
+
+
 # ===================================================================== shells
 def _sub(sub, ctx):
     if sub is None or sub == "":
@@ -565,13 +680,17 @@ def _sub(sub, ctx):
 
 def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None,
            eyebrow_icon=None, t_in=None, t_out=None, enter="drop", top=None, name="w",
-           cls="", sfx="soft_whoosh", sfx_vol=0.14):
-    """The glass widget in the sky zone (left 90, right 170, top 250 → y 230-600).
+           cls="", sfx=DEFAULT, sfx_vol=None):
+    """The glass sky widget: 800 px centred on the frame (x 140-940, grid.centered_box), from
+    top 250, ending above the head (ctx.sky["bottom"]: y 600, or head top − 20 when
+    build/framing.json is measured).
 
     Header (RTL order, right to left): `lead` (an avatar/badge) · title + sub · `aside`
     (a spinner, a status pill). `eyebrow` is the small icon + label line instead of a title.
     Enters with `drop` (or "slide" / "pop" / "none") at t_in (default: the scene start) and
-    leaves with `away` at t_out (default: 0.3 s before the scene end; False = no exit)."""
+    leaves with `away` at t_out (default: 0.3 s before the scene end; False = no exit).
+    sfx= (role "in", default soft_whoosh 0.14): see Sfx. The body may read the height left
+    for it from the CSS variable --kt-avail (the calendar does)."""
     ctx = s.ctx
     wid = s.uid(name)
     head = ""
@@ -584,7 +703,14 @@ def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None
             tt = (f'<div class="kt-tt">{"<b>" + text(title, ctx) + "</b>" if title else ""}'
                   f'{_sub(sub, ctx)}</div>')
         head += f'<div class="kt-hd">{lead or ""}{tt}{aside or ""}</div>'
-    style = f' style="top:{r3(top)}px"' if top is not None else ""
+    top_px = ctx.sky["top"] if top is None else float(top)
+    # the height left for the body inside the sky zone: padding 2 x 30 and an estimated
+    # header (eyebrow 58 + 18 gap; title 60, + 54 with a sub line)
+    head_h = (76 if eyebrow else 0) + ((60 + (54 if sub else 0)) if (title or sub) else
+                                       (64 if (lead or aside) else 0))
+    avail = max(120, round(ctx.sky["bottom"] - top_px - 60 - head_h))
+    style = (f' style="top:{r3(top)}px;--kt-avail:{avail}px"' if top is not None
+             else f' style="--kt-avail:{avail}px"')
     t_in = s.start if t_in is None else s.at(t_in)
     if enter == "drop":
         s.drop("#" + wid, t_in, 0.55)
@@ -599,17 +725,25 @@ def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None
     if t_out is not False:
         t_out = r3(s.end - 0.3) if t_out is None else s.at(t_out)
         s.away("#" + wid, t_out)
-    if sfx:
-        s.sfx(sfx, t_in, "normal", sfx_vol)
-    return Html(f'<div class="kt-wid kt-glass {cls}" id="{wid}"{style}>{head}{body}</div>')
+    if isinstance(sfx, str) and sfx_vol is not None:      # the old (sfx, sfx_vol) pair
+        sfx = {"name": sfx, "vol": sfx_vol}
+    Sfx(s, sfx, "widget", SFX_ROLES["widget"])("in", "soft_whoosh", t_in, "normal",
+                                               0.14 if sfx_vol is None else sfx_vol)
+    return Html(f'<div class="kt-wid kt-glass {cls}" id="{wid}" data-center data-sky{style}>'
+                f'{head}{body}</div>')
 
 
 def panel(s, body, name="p", top=None, left=None, width=None, cls="kt-glass", t_in=None,
           enter="fade"):
     """A free-positioned surface (glass by default) for things that are not a sky widget.
     It starts hidden (CSS) and ENTERS on its own at `t_in` (default: the scene start) with
-    `enter` = fade | pop | drop | none — a hidden panel nobody animates in is a silent blank."""
+    `enter` = fade | pop | drop | none — a hidden panel nobody animates in is a silent blank.
+    With a `width` and no `left` it is placed by the centring rule (grid.centered_box: on
+    x 540 up to 800 px, a wider one shifts left to clear the rail)."""
     st = []
+    centred = width is not None and left is None
+    if centred:
+        left = grid.centered_box(width, g=s.ctx.G)[0]
     if top is not None:
         st.append(f"top:{r3(top)}px")
     if left is not None:
@@ -625,7 +759,8 @@ def panel(s, body, name="p", top=None, left=None, width=None, cls="kt-glass", t_
         s.drop("#" + pid, t)
     elif enter == "fade":
         s.fade("#" + pid, t, 0.25, 0, 1)
-    return Html(f'<div class="kt-panel {cls}" id="{pid}"{style}>{body}</div>')
+    return Html(f'<div class="kt-panel {cls}" id="{pid}"{" data-center" if centred else ""}{style}>'
+                f'{body}</div>')
 
 
 def card(s, body, head, meta=None, meta_tone="", name="card"):
@@ -634,7 +769,7 @@ def card(s, body, head, meta=None, meta_tone="", name="card"):
     mt = f' class="kt-{meta_tone}"' if meta_tone else ""
     m = f"<em{mt}>{text(meta, ctx)}</em>" if meta else ""
     # the card may sit under the returning frame for its last 0.38 s: layering is intended
-    return Html(f'<div class="kt-hcard" id="{s.uid(name)}" data-layout-allow-overlap><div class="kt-ch"><span>'
+    return Html(f'<div class="kt-hcard" id="{s.uid(name)}" data-center data-layout-allow-overlap><div class="kt-ch"><span>'
                 f'{text(head, ctx)}</span>{m}</div><div class="kt-cb">{body}</div></div>')
 
 
@@ -797,14 +932,21 @@ def phone(s, title, sub=None, t0=None, t1=None, fill=0.92, name="ph"):
 
 
 def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=None,
-             never_t=None, days=None, name="cal"):
+             never_t=None, days=None, sfx=DEFAULT, name="cal"):
     """A week calendar with one event that slides one day later on each time in `moves`
     (its label switching through `labels`: "planned", "postponed", "postponed again"), flies
-    off at fly_t, and optionally gets a red rubber stamp (`never`) at never_t."""
+    off at fly_t, and optionally gets a red rubber stamp (`never`) at never_t.
+
+    Auto-height: inside a widget it takes at most the height the sky zone leaves (the
+    widget's --kt-avail: y 600, or the measured head top − 20), the day cells shrinking
+    first and the event going compact below ~230 px. WHY: at a fixed 262 px plus a header
+    it ran ~500 px tall and covered the top of the head on a normal avatar framing.
+    sfx= roles: move (swap_pop 0.1, each slide), fly (soft_whoosh 0.12)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "calendar", SFX_ROLES["calendar"])
     days = days or (["א", "ב", "ג", "ד", "ה", "ו", "ש"] if ctx.dir == "rtl"
                     else ["M", "T", "W", "T", "F", "S", "S"])
-    inner_w = 820 - 72
+    inner_w = ctx.G["max_centered_w"] - 72          # the widget's content width (padding 36)
     pitch = (inner_w - 92) / 6.0
     eid = s.uid(name + "e")
     width = span * pitch - (pitch - 92)
@@ -819,15 +961,16 @@ def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=N
     if fly_t is not None:
         s.tween("#" + eid, {"x": prev, "opacity": 1}, {"x": prev + sign * 900, "opacity": 0},
                 fly_t, 0.4, "power3.in")
-        s.sfx("soft_whoosh", fly_t, "normal", 0.12)
+        cue("fly", "soft_whoosh", fly_t, "normal", 0.12)
     for t in moves:
-        s.sfx("swap_pop", t, "normal", 0.1)
+        cue("move", "swap_pop", t, "normal", 0.1)
     st = ""
     if never and never_t is not None and (s.end - 0.3) - (s.at(never_t) + 0.18) < 0.3:
         ctx.note(f"{s.id}: the stamp lands {s.at(never_t) + 0.18:.2f}s and the widget leaves at "
                  f"{s.end - 0.3:.2f}s by default — give it ≥ 0.3 s of hold (end the scene later, or "
                  f"pass t_out to the widget)")
     if never:
+        # inside the calendar: x/y are in its own box (the stamp sits over the week)
         st = stamp(s, never, never_t if never_t is not None else s.end - 0.6, x=150, y=120,
                    rot=-8, size=96)
     cells = "".join(f"<span>{text(d, ctx)}</span>" for d in days)
@@ -837,25 +980,32 @@ def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=N
                 f'<b>{text(event, ctx)}</b><small>{lab}</small></div>{st}</div>')
 
 
-def today(s, label, ring_t, big=None, t_in=None, t_out=None, x=None, top=None, name="pg"):
+def today(s, label, ring_t, big=None, t_in=None, t_out=None, x=None, top=None, sfx=DEFAULT,
+          name="pg"):
     """A white calendar page ("today") that pops in, with a hand-drawn red marker circle
-    drawn around it at ring_t."""
+    drawn around the day at ring_t. The page is centred on the frame (x 540) unless `x`
+    (its centre) is given. The ring circles the BODY only, under the header strip: drawn
+    around the whole page it crossed the header label. sfx= roles: in (soft_whoosh 0.14),
+    ring (typing 0.1)."""
     G = s.ctx.G
     pid = s.uid(name)
-    left = (G["center_x"] if x is None else x) - 210
+    left = (grid.centered_box(420, g=G)[0] if x is None else x - 210)
     tp = s.ctx.sky["top"] if top is None else top
     t_in = s.at(s.start + 0.04 if t_in is None else t_in)
     s.pop("#" + pid, t_in, 0.45)
     s.draw(f"#{pid}r path", ring_t, 0.5)
     if t_out is not False:
         s.away("#" + pid, s.end - 0.3 if t_out is None else t_out)
-    s.sfx("soft_whoosh", t_in, "normal", 0.14)
-    s.sfx("typing", ring_t, "normal", 0.1)
+    cue = Sfx(s, sfx, "today", SFX_ROLES["today"])
+    cue("in", "soft_whoosh", t_in, "normal", 0.14)
+    cue("ring", "typing", ring_t, "normal", 0.1)
     body = (f'<b class="kt-pbig">{text(big, s.ctx)}</b>' if big is not None
             else icon("calendar", 140, "#0B1020", 1.4))
-    return Html(f'<div class="kt-page" id="{pid}" style="left:{r3(left)}px;top:{r3(tp)}px">'
+    return Html(f'<div class="kt-page" id="{pid}"{" data-center" if x is None else ""} data-sky '
+                f'style="left:{r3(left)}px;top:{r3(tp)}px">'
                 f'<div class="kt-ph">{text(label, s.ctx)}</div><div class="kt-pd">{body}</div>'
-                f'<svg class="kt-ring" id="{pid}r" viewBox="0 0 400 300"><path pathLength="100" '
+                f'<svg class="kt-ring" id="{pid}r" viewBox="0 0 400 300" preserveAspectRatio="none">'
+                f'<path pathLength="100" vector-effect="non-scaling-stroke" '
                 f'd="M200 22C90 18 22 70 26 150s90 132 190 128 166-62 160-136S300 20 186 30"/></svg></div>')
 
 
@@ -874,11 +1024,14 @@ def hand(s, t_in, t_tap, dx=260, dy=240, size=92, name="hand", style=""):
     return h
 
 
-def dialog(s, title, wait, done, no, yes, yes_done, show_t, tap_t, spin=True, name="dl"):
+def dialog(s, title, wait, done, no, yes, yes_done, show_t, tap_t, spin=True, sfx=DEFAULT,
+           name="dl"):
     """An approval dialog ("waiting for someone else's approval…"); at show_t two buttons
     appear, a hand cursor taps the yes-button at tap_t, it turns green with a check and the
-    subtitle flips to `done`. The comic twist: the viewer approves themself."""
+    subtitle flips to `done`. The comic twist: the viewer approves themself. sfx= roles:
+    tap (click 0.5, exempt), show (swap_pop 0.12), ding (ding 0.18)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "dialog", SFX_ROLES["dialog"])
     show_t, tap_t = s.at(show_t), s.at(tap_t)
     sub = swap(s, [wait, done], [tap_t])
     sp = spinner(s, s.start, show_t) if spin else ""
@@ -891,18 +1044,19 @@ def dialog(s, title, wait, done, no, yes, yes_done, show_t, tap_t, spin=True, na
     hd = hand(s, show_t + 0.14, tap_t, name=name + "h")
     s.set(f"#{yid}g", {"opacity": 1}, tap_t)
     s.pulse("#" + yid, tap_t, 1.06, 0.12)
-    s.sfx("swap_pop", show_t, "normal", 0.12)
-    s.sfx("click", tap_t, "exempt", 0.5)
-    s.sfx("ding", tap_t + 0.05, "normal", 0.18)
+    cue("show", "swap_pop", show_t, "normal", 0.12)
+    cue("tap", "click", tap_t, "exempt", 0.5)
+    cue("ding", "ding", tap_t + 0.05, "normal", 0.18)
     return Html(f'<div class="kt-hd"><div class="kt-tt"><b>{text(title, ctx)}</b><small>{sub}</small>'
                 f'</div>{sp}</div><div class="kt-btns" id="{bid}"><span class="kt-btn">{text(no, ctx)}</span>'
                 f'<span class="kt-btn kt-yes" id="{yid}"><em id="{yid}g"></em>{lab}{hd}</span></div>')
 
 
 def task(s, title, flip_t, who=("Unassigned", "You"), status=(("mute", "Open"), ("ok", "In progress")),
-         label="Owner", pulse_t=None, badge="check", name="tk"):
+         label="Owner", pulse_t=None, badge="check", sfx=DEFAULT, name="tk"):
     """A task card: a badge, a title, a status pill (open → in progress) and an owner row
-    whose chip flips from "unassigned" to "you" at flip_t (pulsing at pulse_t first)."""
+    whose chip flips from "unassigned" to "you" at flip_t (pulsing at pulse_t first).
+    sfx= role: flip (swap_pop 0.14)."""
     ctx = s.ctx
     st = pill(s, list(status), [flip_t], name=name + "s")
     asg = swap(s, [who[0], Html(f'<em>{icon("user", 30, "#fff", 2.4)}</em><span>{text(who[1], ctx)}</span>')],
@@ -910,34 +1064,36 @@ def task(s, title, flip_t, who=("Unassigned", "You"), status=(("mute", "Open"), 
     if pulse_t is not None:
         s.pulse("#" + asg.id, pulse_t, 1.15, 0.18)
     s.pulse("#" + asg.id, s.at(flip_t) + 0.02, 1.2, 0.2)
-    s.sfx("swap_pop", flip_t, "normal", 0.14)
+    Sfx(s, sfx, "task", SFX_ROLES["task"])("flip", "swap_pop", flip_t, "normal", 0.14)
     return Html(f'<div class="kt-hd"><i class="kt-tsq">{icon(badge, 34, "#fff", 3)}</i><div class="kt-tt">'
                 f'<b>{text(title, ctx)}</b></div>{st}</div><div class="kt-row"><span>{text(label, ctx)}</span>'
                 f'{asg}</div>')
 
 
 def waiting_room(s, title, wait, fail, fail_t, leave=None, leave_t=None, press_t=None,
-                 host="?", widget_name="w", name="wr"):
+                 host="?", widget_name="w", sfx=DEFAULT, name="wr"):
     """A video-call waiting room: a "?" host, "waiting for the host to join…", a spinner. At
     fail_t it flips to the red `fail` line and the widget shakes; a red `leave` button pops
-    at leave_t and gets pressed at press_t."""
+    at leave_t and gets pressed at press_t. sfx= roles: fail (message 0.16), leave (pop
+    0.2), press (click 0.3)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "waiting_room", SFX_ROLES["waiting_room"])
     fail_t = s.at(fail_t)
     sub = swap(s, [wait, fail], [fail_t], tones=["", "kt-red"])
     sp = spinner(s, s.start, s.end)
     s.set("#" + sp.id, {"opacity": 0.25}, fail_t)
     s.shake(widget_name, fail_t, 14, "x")
-    s.sfx("message", fail_t, "normal", 0.16)
+    cue("fail", "message", fail_t, "normal", 0.16)
     lv = ""
     if leave:
         lid = s.uid(name + "l")
         lt = s.at(leave_t if leave_t is not None else fail_t + 0.5)
         s.tween("#" + lid, {"opacity": 0, "scale": 0.6}, {"opacity": 1, "scale": 1}, lt, 0.3,
                 "back.out(2)")
-        s.sfx("pop", lt, "normal", 0.2)
+        cue("leave", "pop", lt, "normal", 0.2)
         if press_t is not None:
             s.tap("#" + lid, press_t)
-            s.sfx("click", press_t, "normal", 0.3)
+            cue("press", "click", press_t, "normal", 0.3)
         lv = f'<div class="kt-leave" id="{lid}">{text(leave, ctx)}</div>'
     return Html(f'<div class="kt-hd"><i class="kt-host">{text(host, ctx)}</i><div class="kt-tt">'
                 f'<b>{text(title, ctx)}</b><small>{sub}</small></div>{sp}</div>{lv}')
@@ -952,10 +1108,12 @@ def notify(s, app, title, body=None, meta=None, icon_name="bell"):
                 f'<div class="kt-nmeta"><span>{text(app, ctx)}</span>{m}</div><b>{text(title, ctx)}</b>{p}</div></div>')
 
 
-def chat(s, msgs, typing=None, name="ch"):
+def chat(s, msgs, typing=None, sfx=DEFAULT, name="ch"):
     """A chat thread: msgs = [(side "in"|"out", text, t), ...], each bubble pops on its t;
-    typing = (t0, t1) shows the three-dot indicator before the first incoming reply."""
+    typing = (t0, t1) shows the three-dot indicator before the first incoming reply.
+    sfx= role: msg (message 0.14 for "in", pop for "out"; a name replaces both)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "chat", SFX_ROLES["chat"])
     out = []
     if typing:
         a, b = s.at(typing[0]), s.at(typing[1])
@@ -973,36 +1131,44 @@ def chat(s, msgs, typing=None, name="ch"):
         out.append(f'<div class="kt-bub kt-{side}" id="{bid}">{text(msg, ctx)}</div>')
         s.tween("#" + bid, {"opacity": 0, "y": 30, "scale": 0.9}, {"opacity": 1, "y": 0, "scale": 1},
                 t, 0.3, "back.out(1.6)")
-        s.sfx("message" if side == "in" else "pop", t, "normal", 0.14)
+        cue("msg", "message" if side == "in" else "pop", t, "normal", 0.14)
     return Html(f'<div class="kt-chat">{"".join(out)}</div>')
 
 
-def strike_pills(s, items, top=None, name="sp"):
+def strike_pills(s, items, top=None, t_out=None, sfx=DEFAULT, name="sp"):
     """Glass pills that pop in on their word and get a red RTL strike-through (then dim):
-    items = [(text, t_in, t_strike), ...]. The thing the speaker tells you to STOP doing."""
+    items = [(text, t_in, t_strike), ...]. The thing the speaker tells you to STOP doing.
+    The row is centred on the frame (x 540) and leaves with `away` at t_out (default 0.28 s
+    before the scene end; False = no exit — it used to have none and hard-cut at the scene
+    end). sfx= roles: strike (click 0.4), pop (swap_pop 0.14)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "strike_pills", SFX_ROLES["strike_pills"])
     out = []
     for i, (label, t_in, t_st) in enumerate(items):
         pid, bid = s.uid(f"{name}{i}"), s.uid(f"{name}{i}b")
         out.append(f'<div class="kt-spill kt-glass" id="{pid}">{text(label, ctx)}<i class="kt-strike" id="{bid}"></i></div>')
         s.pop("#" + pid, t_in, 0.4)
-        s.sfx("swap_pop", t_in, "normal", 0.14)
+        cue("pop", "swap_pop", t_in, "normal", 0.14)
         if t_st is not None:
             s.strike("#" + bid, "#" + pid, t_st)
-            s.sfx("click", t_st, "normal", 0.4)
+            cue("strike", "click", t_st, "normal", 0.4)
     tp = ctx.sky["top"] + 50 if top is None else top
-    return Html(f'<div class="kt-pills" style="top:{r3(tp)}px">{"".join(out)}</div>')
+    rid = s.uid(name + "row")
+    if t_out is not False:
+        s.away("#" + rid, r3(s.end - 0.28) if t_out is None else t_out)
+    return Html(f'<div class="kt-pills" id="{rid}" data-center="content" style="top:{r3(tp)}px">'
+                f'{"".join(out)}</div>')
 
 
-def stamp(s, label, t, x=None, y=None, rot=-8, size=96, tone="red", name=None, sfx=True):
+def stamp(s, label, t, x=None, y=None, rot=-8, size=96, tone="red", name=None, sfx=DEFAULT):
     """A rubber stamp that slams (scale 2.3 → 1, rotation → rot, 0.18 s power4.in) at t.
-    x/y = its centre in its parent's coordinates (default: the safe-zone centre, y 420)."""
+    x/y = its centre in its parent's coordinates (default: the FRAME centre x 540, y 420).
+    sfx= role: slam (glass_snap 0.16, exempt, 0.16 s after t)."""
     sid = s.n(name or "st")
     x = s.ctx.G["center_x"] if x is None else x
     y = 420 if y is None else y
     s.stamp("#" + sid, t, rot)
-    if sfx:
-        s.sfx("glass_snap", t + 0.16, "exempt", 0.16)
+    Sfx(s, sfx, "stamp", SFX_ROLES["stamp"])("slam", "glass_snap", s.at(t) + 0.16, "exempt", 0.16)
     tone_c = "" if tone == "red" else f" kt-st-{tone}"
     # a zero-size anchor at (x, y) centres the stamp without a CSS transform on the element
     # GSAP rotates and scales (lint: gsap_css_transform_conflict)
@@ -1056,14 +1222,15 @@ def percent(s, values=None, count=None, top=None, bar=True, size=230, name="pc")
             prev = to
     tp =(ctx.framing["chest"][0] + 20) if top is None else top
     br = f'<div class="kt-tr kt-pbar"><i id="{fid}"></i></div>' if bar else ""
-    return Html(f'<div class="kt-pct" style="top:{r3(tp)}px"><div class="kt-num" style="font-size:{size}px">'
+    return Html(f'<div class="kt-pct" data-center="content" style="top:{r3(tp)}px"><div class="kt-num" style="font-size:{size}px">'
                 f'{sw}</div>{br}</div>')
 
 
 def stack(s, lines, top=None, size=104, align="center", lead=0.04, name="h"):
     """A word-by-word stacked headline (the hook's thin opener). lines: markup string —
     " / " breaks a line, *bold keyword*, ^light partner^, +bold white+, =gradient=, plain =
-    thin; or [[(word, cls), ...], ...]. Each word lands on its spoken start (from words.json)."""
+    thin; or [[(word, cls), ...], ...]. Each word lands on its spoken start (from words.json).
+    It lives in the centred lane (x 140-940): align "center" puts it on the frame centre."""
     ctx = s.ctx
     rows = parse_markup(lines) if isinstance(lines, str) else lines
     toks = [w for row in rows for w, _ in row]
@@ -1083,7 +1250,8 @@ def stack(s, lines, top=None, size=104, align="center", lead=0.04, name="h"):
         out.append(f'<div class="kt-ln">{" ".join(sp)}</div>')
     al = {"center": "center", "right": "flex-start" if ctx.dir == "rtl" else "flex-end",
           "left": "flex-end" if ctx.dir == "rtl" else "flex-start"}[align]
-    return Html(f'<div class="kt-stack" style="top:{r3(top)}px;font-size:{size}px;align-items:{al}">'
+    cen = ' data-center="content"' if align == "center" else ""
+    return Html(f'<div class="kt-stack"{cen} style="top:{r3(top)}px;font-size:{size}px;align-items:{al}">'
                 f'{"".join(out)}</div>')
 
 
@@ -1126,11 +1294,15 @@ def sparks(s, t, n=18, box=(120, 500, 960, 1300), up=(-900, -200), spread=520, s
 
 
 def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.85,
-         spark_n=18, seed=11, shake=True, name="bars"):
+         spark_n=18, seed=11, shake=True, sfx=DEFAULT, name="bars"):
     """Full-frame steel prison bars. Plant: slam down at slam_t (staggered, power4.in, the
     first bar LANDS on slam_t, camera shake on impact), lift away at lift_t. Callback: fade
-    back in at fade_t and burst outward with sparks at burst_t. Decoration: data-grid=bleed."""
+    back in at fade_t and burst outward with sparks at burst_t. Decoration: data-grid=bleed.
+    sfx= roles: slam (bars 0.42, exempt — on the beat, so it can mask the word it lands on:
+    re-level it with sfx={"slam": {"vol": 0.14, "dt": -0.12}}), fade (bars 0.2), lift
+    (whoosh_low 0.16), burst (shatter 0.32)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "bars", SFX_ROLES["bars"])
     W, H = ctx.W, ctx.H
     cid = s.uid(name)
     gap = (W - 120 - 34) / float(max(1, n - 1))
@@ -1147,17 +1319,17 @@ def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.
             s.tween(f"#{cid}c{c}", {"scaleX": 0}, {"scaleX": 1}, slam_t, 0.2, "power3.out")
         if shake:
             s.cam_shake(slam_t)
-        s.sfx("bars", slam_t - 0.02, "exempt", 0.42)
+        cue("slam", "bars", slam_t - 0.02, "exempt", 0.42)
     if fade_t is not None:
         s.fade("#" + cid, fade_t, 0.6, 0, opacity)
-        s.sfx("bars", fade_t, "exempt", 0.2)
+        cue("fade", "bars", fade_t, "exempt", 0.2)
     if lift_t is not None:
         lift_t = s.at(lift_t)
         for k in range(n):
             s.tween(f"#{cid}b{k}", {"y": 0}, {"y": -H}, r3(lift_t + 0.02 * k), 0.32, "power3.in")
         for c in range(2):
             s.tween(f"#{cid}c{c}", {"y": 0}, {"y": -H}, r3(lift_t + 0.02 * (n + c)), 0.32, "power3.in")
-        s.sfx("whoosh_low", lift_t, "exempt", 0.16)
+        cue("lift", "whoosh_low", lift_t, "exempt", 0.16)
     sp = ""
     if burst_t is not None:
         burst_t = s.at(burst_t)
@@ -1171,7 +1343,7 @@ def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.
             s.tween(f"#{cid}c{cc}", {"scaleX": 1, "opacity": 1}, {"scaleX": 1.6, "opacity": 0},
                     burst_t, 0.4, "power3.out")
         sp = sparks(s, burst_t, spark_n, seed=seed, name=name + "s")
-        s.sfx("shatter", burst_t - 0.12, "exempt", 0.32)
+        cue("burst", "shatter", burst_t - 0.12, "exempt", 0.32)
     init = "" if fade_t is not None else ' style="opacity:0"' if slam_t is not None else ""
     if fade_t is None and slam_t is None:
         s.set("#" + cid, {"opacity": opacity}, s.start)
@@ -1179,12 +1351,14 @@ def bars(s, slam_t=None, lift_t=None, fade_t=None, burst_t=None, n=7, opacity=0.
 
 
 def puppet(s, drop_t, sway_t=None, sway_n=5, snap_t=None, out_t=None, anchors=None,
-           bar_y=None, name="pup"):
+           bar_y=None, sfx=DEFAULT, name="pup"):
     """A wooden puppet control bar drops in at the top; strings draw down to the speaker's
     shoulders and head. At sway_t the bar and the CAMERA sway together ("someone else moves
     your life"); at snap_t the strings snap and the bar flies off (the callback). Anchors
-    come from the framing map. Decoration: data-grid=bleed."""
+    come from the framing map. Decoration: data-grid=bleed. sfx= roles: drop (soft_whoosh
+    0.16), sway (snap 0.1), snap (snap 0.4, exempt)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "puppet", SFX_ROLES["puppet"])
     fr = ctx.framing
     G = ctx.G
     cx = max(320, min(ctx.W - 320, fr["face_cx"]))
@@ -1207,12 +1381,12 @@ def puppet(s, drop_t, sway_t=None, sway_n=5, snap_t=None, out_t=None, anchors=No
     s.tween(f"#{pid}x", {"y": -200, "opacity": 0}, {"y": 0, "opacity": 1}, drop_t, 0.4, "expo.out")
     for i in range(len(anchors)):
         s.draw(f"#{pid}s{i}", r3(drop_t + 0.1 + 0.08 * i), 0.4)
-    s.sfx("soft_whoosh", drop_t, "normal", 0.16)
+    cue("drop", "soft_whoosh", drop_t, "normal", 0.16)
     if sway_t is not None:
         s.tween(f"#{pid}g", {"rotation": 0}, {"rotation": 7}, sway_t, 0.32, "sine.inOut",
                 yoyo=True, repeat=sway_n, svgOrigin=f"{r3(cx)} {r3(by)}")
         s.cam_sway(sway_t, sway_n)
-        s.sfx("snap", sway_t, "normal", 0.1)
+        cue("sway", "snap", sway_t, "normal", 0.1)
     if snap_t is not None:
         snap_t = s.at(snap_t)
         for i in range(len(anchors)):
@@ -1220,22 +1394,23 @@ def puppet(s, drop_t, sway_t=None, sway_n=5, snap_t=None, out_t=None, anchors=No
                     snap_t, 0.25, "power2.out")
         s.tween(f"#{pid}x", {"y": 0, "rotation": 0, "opacity": 1}, {"y": -500, "rotation": -25, "opacity": 0},
                 r3(snap_t + 0.02), 0.5, "power3.in")
-        s.sfx("snap", snap_t, "exempt", 0.4)
+        cue("snap", "snap", snap_t, "exempt", 0.4)
     elif out_t is not False:
         s.fade("#" + pid, s.end - 0.3 if out_t is None else out_t, 0.25, 1, 0)
     return Html(svg)
 
 
-def light_leak(s, t, d=1.8, twinkles=14, seed=11, region=None, name="lk"):
-    """A warm light leak sweeping across the frame with twinkles ("something beautiful")."""
+def light_leak(s, t, d=1.8, twinkles=14, seed=11, region=None, sfx=DEFAULT, name="lk"):
+    """A warm light leak sweeping across the frame with twinkles ("something beautiful").
+    sfx= role: in (riser_short 0.1)."""
     ctx = s.ctx
     lid = s.uid(name)
     t = s.at(t)
     s.tween("#" + lid, {"opacity": 0, "x": -200}, {"opacity": 1, "x": 120}, t, 1.0, "power2.out")
     s.tween("#" + lid, {"opacity": 1}, {"opacity": 0}, max(t + 1.0, r3(t + d - 0.6)), 0.6, "power2.in")
     rng = random.Random(seed)
-    x0, y0, x1, y1 = region or (ctx.G["safe"][0] + 20, ctx.sky["top"] - 10, ctx.G["safe"][2] - 40,
-                                ctx.sky["bottom"])
+    lx, lw = grid.center_lane(ctx.G)      # twinkles spread evenly about the frame centre
+    x0, y0, x1, y1 = region or (lx + 20, ctx.sky["top"] - 10, lx + lw - 20, ctx.sky["bottom"])
     tw = []
     for i in range(twinkles):
         tid = s.uid(f"{name}t{i}")
@@ -1244,14 +1419,15 @@ def light_leak(s, t, d=1.8, twinkles=14, seed=11, region=None, name="lk"):
         tt = r3(t + 0.1 + (d - 0.7) * i / max(1, twinkles - 1))
         s.tween("#" + tid, {"opacity": 0, "scale": 0.2}, {"opacity": 1, "scale": 1}, tt, 0.3,
                 "sine.inOut", yoyo=True, repeat=1)
-    s.sfx("riser_short", t, "normal", 0.1)
+    Sfx(s, sfx, "light_leak", SFX_ROLES["light_leak"])("in", "riser_short", t, "normal", 0.1)
     return Html(f'<div class="kt-leak" id="{lid}" data-grid="bleed"></div>{"".join(tw)}')
 
 
 def streak(s, t, d=0.75, cx=None, cy=None, rx=560, ry=140, tilt=-10, color="#FFFFFF",
-           glow="var(--blue2)", width=7, name="sk"):
+           glow="var(--blue2)", width=7, sfx=DEFAULT, name="sk"):
     """The Rollin light streak: a bright comet segment orbiting the speaker along a tilted
-    ellipse, with a soft glow, in d seconds. Seek-safe: a stroke-dashoffset sweep."""
+    ellipse, with a soft glow, in d seconds. Seek-safe: a stroke-dashoffset sweep.
+    sfx= role: in (whoosh_high 0.12)."""
     ctx = s.ctx
     fr = ctx.framing
     cx = fr["face_cx"] if cx is None else cx
@@ -1270,7 +1446,7 @@ def streak(s, t, d=0.75, cx=None, cy=None, rx=560, ry=140, tilt=-10, color="#FFF
     for part, a in (("g", 30), ("c", 24)):
         s.tween(f"#{sid}{part}", {"strokeDashoffset": a}, {"strokeDashoffset": -100}, t, d, "power1.inOut")
     s.fade("#" + sid, t, 0.08)
-    s.sfx("whoosh_high", t, "normal", 0.12)
+    Sfx(s, sfx, "streak", SFX_ROLES["streak"])("in", "whoosh_high", t, "normal", 0.12)
     return Html(svg)
 
 
@@ -1406,10 +1582,14 @@ def _brand_bricks(box, ctx):
     return None
 
 
-def bricks(s, t, glow_t=None, shape="arch", box=None, step=0.042, t_out=None, name="bk"):
+def bricks(s, t, glow_t=None, shape="arch", box=None, step=0.042, t_out=None, sfx=DEFAULT,
+           name="bk"):
     """Bricks fall in one by one (staggered, back.out) and build a symbol ("start building"),
-    with a light glowing inside it at glow_t. shape: arch | wall | brand | [(x, y, rot), ...]."""
+    with a light glowing inside it at glow_t. shape: arch | wall | brand | [(x, y, rot), ...].
+    The default box is the sky zone, centred on the frame. sfx= roles: build (bricks 0.2,
+    exempt), glow (ding 0.14)."""
     ctx = s.ctx
+    cue = Sfx(s, sfx, "bricks", SFX_ROLES["bricks"])
     box = box or (ctx.sky["left"], ctx.sky["top"] - 10, ctx.W - ctx.sky["right"], ctx.sky["bottom"])
     if isinstance(shape, (list, tuple)):
         pts, bw, bh, glow = [tuple(p) + (0,) * (3 - len(p)) for p in shape], 100, 52, None
@@ -1430,15 +1610,16 @@ def bricks(s, t, glow_t=None, shape="arch", box=None, step=0.042, t_out=None, na
         g = (f'<i class="kt-bglow" id="{cid}g" style="left:{r3(gx)}px;top:{r3(gy)}px;width:{r3(gw)}px;'
              f'height:{r3(gh)}px;border-radius:{r3(gw / 2)}px {r3(gw / 2)}px 0 0"></i>')
         s.fade(f"#{cid}g", glow_t, 0.3)
-        s.sfx("ding", glow_t, "normal", 0.14)
-    s.sfx("bricks", t, "exempt", 0.2)
+        cue("glow", "ding", glow_t, "normal", 0.14)
+    cue("build", "bricks", t, "exempt", 0.2)
     if t_out is not False:
         s.away("#" + cid, s.end - 0.28 if t_out is None else t_out)
     return Html(f'<div class="kt-full" id="{cid}">{"".join(out)}{g}</div>')
 
 
-def glow_ring(s, t, d=None, cx=None, cy=None, r=None, name="gl"):
-    """A blue glow ring + halo around the speaker ("the power passes to you")."""
+def glow_ring(s, t, d=None, cx=None, cy=None, r=None, sfx=DEFAULT, name="gl"):
+    """A blue glow ring + halo around the speaker ("the power passes to you").
+    sfx= role: in (riser_short 0.1)."""
     ctx = s.ctx
     fr = ctx.framing
     cx = fr["face_cx"] if cx is None else cx
@@ -1451,7 +1632,7 @@ def glow_ring(s, t, d=None, cx=None, cy=None, r=None, name="gl"):
     s.tween("#" + hid, {"opacity": 1}, {"opacity": 0}, max(t + 0.6, r3(t + d - 0.5)), 0.5, "power2.in")
     s.tween("#" + rid, {"opacity": 0, "scale": 0.8}, {"opacity": 0.55, "scale": 1.08}, t, 0.6, "power2.out")
     s.tween("#" + rid, {"opacity": 0.55}, {"opacity": 0}, max(t + 0.6, r3(t + d - 0.4)), 0.4, "power2.in")
-    s.sfx("riser_short", t, "normal", 0.1)
+    Sfx(s, sfx, "glow_ring", SFX_ROLES["glow_ring"])("in", "riser_short", t, "normal", 0.1)
     return Html(f'<i class="kt-halo" id="{hid}" data-grid="bleed" style="left:{r3(cx - 1.4 * r)}px;'
                 f'top:{r3(cy - 1.7 * r)}px;width:{r3(2.8 * r)}px;height:{r3(3.4 * r)}px"></i>'
                 f'<i class="kt-ringo" id="{rid}" data-grid="bleed" style="left:{r3(cx - r)}px;top:{r3(cy - 1.2 * r)}px;'
@@ -1460,15 +1641,27 @@ def glow_ring(s, t, d=None, cx=None, cy=None, r=None, name="gl"):
 
 # ======================================================================== hook
 class HookCard(Scene):
-    """One card of the hook world: the dark card (header strip + your body) and its big
-    gradient title under it at y≈1110. Build its body with components, then pass it to hook()."""
+    """One card of the hook world: the dark card (header strip + your body), 800 px centred
+    on the frame, and its big gradient title under it at y≈1110, centred too. Build its
+    body with components, then pass it to hook()."""
 
     def __init__(self, ctx, sid, start, end, big, head, meta=None, meta_tone="", enter=None,
-                 title_t=None):
+                 title_t=None, sfx=DEFAULT):
         super().__init__(ctx, sid, start, end, layer="card")
-        self.big, self.head, self.meta, self.meta_tone = big, head, meta, meta_tone
+        self.big, self.head, self.meta_tone = big, head, meta_tone
         self.enter, self.title_t = enter, title_t
+        self.sfx_arg = sfx
         self._body = []
+        self.meta = None
+        self.set_meta(meta)
+
+    def set_meta(self, meta):
+        """The header's left slot: text, Html (a spinner, a pill), or a CALLABLE that gets
+        this card and returns one — `meta=lambda c: k.spinner(c)`. WHY: a spinner needs the
+        card (its scene) to exist, so `hook_card(meta=k.spinner(card))` could not be
+        written; the callable form (or card.set_meta(k.spinner(card)) afterwards) can."""
+        self.meta = meta(self) if callable(meta) else meta
+        return self
 
     def add(self, *parts):
         self._body += [str(p) for p in parts]
@@ -1480,14 +1673,14 @@ class HookCard(Scene):
         cid, tid = self.uid("card"), self.uid("t")
         # 140 px unless the title (plus its 4 % drift) would leave the safe width
         import moments
-        gw = ctx.G["safe"][2] - ctx.G["safe"][0]
+        gw = ctx.G["max_centered_w"]          # the centred lane: the title sits on x 540
         w100 = moments._tw(str(self.big), 100, 800) / 100.0
         # 0.90: the width model runs a few % short on heavy Hebrew (a real title measured
         # 886 px where the model said 864) and the title drifts to 104 %
         size = int(min(140, 0.90 * gw / max(0.1, w100) / 1.04))
         fs = f' style="font-size:{size}px"' if size < 140 else ""
         self.parts = [card(self, "".join(self._body), self.head, self.meta, self.meta_tone),
-                      f'<div class="kt-hbigw"><div class="kt-hbig kt-grad" id="{tid}"{fs}>'
+                      f'<div class="kt-hbigw" data-center="content"><div class="kt-hbig kt-grad" id="{tid}"{fs}>'
                       f'{text(self.big, ctx)}</div></div>']
         t0 = r3(self.start + 0.05)
         if enter == "rise":
@@ -1507,17 +1700,26 @@ class HookCard(Scene):
         return self.done()
 
 
-def hook_card(ctx, sid, start, end, big, head, meta=None, meta_tone="", enter=None, title_t=None):
-    return HookCard(ctx, sid, start, end, big, head, meta, meta_tone, enter, title_t)
+def hook_card(ctx, sid, start, end, big, head, meta=None, meta_tone="", enter=None, title_t=None,
+              sfx=DEFAULT):
+    """One hook-world card (a HookCard scene): header `head` + `meta`, your body, and the
+    big gradient title `big` under it. meta may be text, Html, or a callable taking the
+    card (`meta=lambda c: k.spinner(c)`); or call card.set_meta(...) later. enter: rise |
+    swing | lift (default: by position). sfx= role: in (first card swap_pop 0.18, later
+    cards soft_whoosh 0.2 exempt). Pass the cards to hook()."""
+    return HookCard(ctx, sid, start, end, big, head, meta, meta_tone, enter, title_t, sfx)
 
 
-def hook(ctx, cards, out, back, intro=None, intro_start=0.0, sid="hook", land=None, size=104):
+def hook(ctx, cards, out, back, intro=None, intro_start=0.0, sid="hook", land=None, size=104,
+         sfx=DEFAULT):
     """The hook world (spec §4.4, exact). The opening words land as a thin headline on the
     chest; at `out` the frame flies away (scale .34, y −900, radius 60, blur 14, 0.32 s
     power3.in) into a dark brand world with ambient drift; 2-3 cards illustrate the first
     lines; at `back` the frame returns (scale .4, y −700 → the punch scale at that moment,
     0.38 s power3.out) through a blue screen tint fading .9 → 0. Captions are hidden from the
-    first word to the landing. Returns a list of fragments."""
+    first word to the landing. sfx= roles: out (whoosh_impact 0.32, exempt), back
+    (whoosh_impact 0.24, exempt), cards (every card's entrance, unless the card has its own
+    sfx=). Returns a list of fragments."""
     out, back = r3(ctx.at(out)), r3(ctx.at(back))
     if not cards or not 1 <= len(cards) <= 4:
         raise KitError("kit: hook needs 2-3 cards (spec §3.1)")
@@ -1561,8 +1763,10 @@ def hook(ctx, cards, out, back, intro=None, intro_start=0.0, sid="hook", land=No
     sw.set(F, {"clipPath": "inset(0px 0px 0px 0px)", "filter": "none"}, landing)
     sw._footage(out, landing)
     sw.hide(intro_start if intro else out, landing)
-    sw.sfx("whoosh_impact", out, "exempt", 0.32)
-    sw.sfx("whoosh_impact", back, "exempt", 0.24)
+    hcue = Sfx(sw, sfx, "hook", SFX_ROLES["hook"])
+    hcue("out", "whoosh_impact", out, "exempt", 0.32)
+    hcue("back", "whoosh_impact", back, "exempt", 0.24)
+    card_arg = None if hcue.mute else hcue.map.get("cards", DEFAULT)
     frags.append(sw.done())
     # 3. the cards
     last = None
@@ -1573,10 +1777,12 @@ def hook(ctx, cards, out, back, intro=None, intro_start=0.0, sid="hook", land=No
             raise KitError(f"kit: hook card {c.id} starts {c.start}s, before the fly-out {out}s")
         if last is not None and c.start > last.end + 0.05:
             ctx.note(f"hook: gap between cards {last.id} and {c.id} ({last.end}-{c.start}s) — the world sits empty")
+        ccue = Sfx(c, c.sfx_arg if c.sfx_arg is not DEFAULT else card_arg, "hook_card",
+                   SFX_ROLES["hook_card"])
         if i == 0:
-            c.sfx("swap_pop", c.start + 0.05, "normal", 0.18)
+            ccue("in", "swap_pop", c.start + 0.05, "normal", 0.18)
         else:
-            c.sfx("soft_whoosh", c.start, "exempt", 0.2)
+            ccue("in", "soft_whoosh", c.start, "exempt", 0.2)
         frags.append(c.finish(i))
         last = c
     if last.end < back - 0.05:
@@ -1664,10 +1870,7 @@ def r_chat(ctx, id, start, end, msgs, typing=None):
 
 def r_strike(ctx, id, start, end, items, top=None):
     s = _w(ctx, id, start, end)
-    s.add(strike_pills(s, items, top))
-    cid = s.uid("pills")
-    s.parts[-1] = s.parts[-1].replace('<div class="kt-pills"', f'<div class="kt-pills" id="{cid}"', 1)
-    s.away("#" + cid, s.end - 0.28)
+    s.add(strike_pills(s, items, top))            # leaves with away 0.28 s before the end
     return s.done()
 
 
@@ -1760,7 +1963,8 @@ def css(ctx):
     G = ctx.G
     gx0, gy0, gx1, gy1 = G["safe"]
     rtl = ctx.dir == "rtl"
-    kw = dict(gx0=gx0, gw=gx1 - gx0, cx=G["center_x"], dir=ctx.dir,
+    lx, lw = grid.center_lane(G)      # x 140-940: centred on the frame (grid.centered_box)
+    kw = dict(gx0=gx0, gw=gx1 - gx0, lx=lx, lw=lw, cx=G["center_x"], dir=ctx.dir,
               sky_l=ctx.sky["left"], sky_r=ctx.sky["right"], sky_t=ctx.sky["top"],
               card_t=ctx.sky["top"] + 80, card_h=690,
               fill_origin="100% 50%" if rtl else "0% 50%",
@@ -1774,7 +1978,8 @@ def css(ctx):
 
 
 def catalogue():
-    """(name, first docstring line) for every public component — `scenes.py list`."""
+    """(name, first docstring line) for every public component — `scenes.py list`. Every
+    entry must have one (hook_card once printed an empty line; the selftest checks)."""
     names = ["widget", "panel", "card", "swap", "pill", "spinner", "empty", "progress", "avatars",
              "week", "phone", "calendar", "today", "hand", "dialog", "task", "waiting_room",
              "notify", "chat", "strike_pills", "stamp", "percent", "stack", "sparks", "bars",

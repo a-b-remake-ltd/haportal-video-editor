@@ -14,7 +14,8 @@
       .kt-glass { background: var(--glass); border: 1.5px solid var(--glass-edge); border-radius: 36px;
         backdrop-filter: blur(22px) saturate(1.3); -webkit-backdrop-filter: blur(22px) saturate(1.3);
         box-shadow: 0 22px 56px rgba(6,18,36,.35); }
-      /* the sky widget: left 90, right 170, top 250 → lives in y 230-600 */
+      /* the sky widget: 800 px centred on the FRAME (left ${sky_l}, right ${sky_r}: grid.centered_box),
+         from top ${sky_t}; it must end above the head (the grid gate checks data-sky) */
       .kt-wid { position: absolute; left: ${sky_l}px; right: ${sky_r}px; top: ${sky_t}px;
         padding: 30px 36px; opacity: 0; }
       .kt-panel { position: absolute; padding: 30px 36px; opacity: 0; }
@@ -93,16 +94,22 @@
       .kt-pcol > b { display: block; font-size: 56px; font-weight: 800; line-height: 1.15; white-space: nowrap; }
       .kt-pcol small { display: block; font-size: 36px; color: rgba(255,255,255,.7); }
 
-      /* calendar with a postponed event */
-      .kt-cal { position: relative; height: 262px; }
-      .kt-cgrid { display: flex; justify-content: space-between; margin-top: 18px; }
-      .kt-cgrid > span { width: 92px; text-align: center; font-size: 40px; font-weight: 800; color: rgba(255,255,255,.55); }
-      .kt-cells { display: flex; justify-content: space-between; margin-top: 12px; }
-      .kt-cells > i { width: 92px; height: 170px; border-radius: 18px; background: rgba(255,255,255,.05); }
-      .kt-evt { position: absolute; top: 96px; padding: 12px 20px 16px; border-radius: 20px; background: var(--violet);
+      /* calendar with a postponed event. Auto-height: at most 262 px, and never more than the
+         sky zone leaves inside its widget (--kt-avail, set by widget()); the day cells give
+         way first, the event goes compact on a short sky (a fixed 262 px under a header ran
+         ~500 px tall and covered the head) */
+      .kt-cal { position: relative; display: flex; flex-direction: column;
+        height: min(262px, var(--kt-avail, 262px)); }
+      .kt-cgrid { display: flex; justify-content: space-between; margin-top: 12px; flex: none; }
+      .kt-cgrid > span { width: 92px; text-align: center; font-size: 38px; line-height: 1.2; font-weight: 800; color: rgba(255,255,255,.55); }
+      .kt-cells { display: flex; justify-content: space-between; margin-top: 12px; flex: 1 1 auto; min-height: 0; }
+      .kt-cells > i { width: 92px; border-radius: 18px; background: rgba(255,255,255,.05); }
+      .kt-evt { position: absolute; top: 82px; padding: 10px 20px 14px; border-radius: 20px; background: var(--violet);
         box-shadow: 0 12px 30px rgba(0,0,0,.35); }
-      .kt-evt > b { display: block; font-size: 34px; font-weight: 800; white-space: nowrap; overflow: hidden; }
-      .kt-evt small { font-size: 28px; font-weight: 700; color: rgba(255,255,255,.85); }
+      .kt-evt > b { display: block; font-size: clamp(28px, calc(var(--kt-avail, 262px) * .13), 34px);
+        line-height: 1.15; font-weight: 800; white-space: nowrap; overflow: hidden; }
+      .kt-evt small { font-size: clamp(24px, calc(var(--kt-avail, 262px) * .107), 28px); line-height: 1.2;
+        font-weight: 700; color: rgba(255,255,255,.85); }
 
       /* rubber stamp (anchored on its centre by a zero-size wrapper) */
       .kt-stampw { position: absolute; width: 0; height: 0; display: flex; align-items: center; justify-content: center; }
@@ -118,7 +125,9 @@
         border-radius: 30px 30px 0 0; }
       .kt-pd { display: grid; place-items: center; height: 200px; }
       .kt-pbig { font-size: 150px; font-weight: 900; line-height: 1; }
-      .kt-ring { position: absolute; left: 10px; top: 10px; width: 400px; height: 300px; overflow: visible; }
+      /* the marker ring circles the BODY (under the header strip, which ends ~122 px down):
+         drawn around the whole page it crossed the header label */
+      .kt-ring { position: absolute; left: 16px; top: 120px; width: 388px; height: 206px; overflow: visible; }
       .kt-ring path { fill: none; stroke: var(--red); stroke-width: 12; stroke-linecap: round;
         stroke-dasharray: 100; stroke-dashoffset: 100; }
 
@@ -168,7 +177,7 @@
       .kt-typing > i { width: 16px; height: 16px; border-radius: 50%; background: rgba(255,255,255,.75); }
 
       /* strike-through pills */
-      .kt-pills { position: absolute; left: ${gx0}px; width: ${gw}px; display: flex; flex-wrap: wrap;
+      .kt-pills { position: absolute; left: ${lx}px; width: ${lw}px; display: flex; flex-wrap: wrap;
         justify-content: center; gap: 26px; }
       .kt-spill { position: relative; font-size: 64px; font-weight: 800; padding: 16px 44px 22px; border-radius: 99px;
         white-space: nowrap; opacity: 0; }
@@ -176,7 +185,7 @@
         background: var(--red); transform-origin: $strike_origin; opacity: 0; }
 
       /* the Rollin percent on the chest */
-      .kt-pct { position: absolute; left: ${gx0}px; width: ${gw}px; text-align: center; }
+      .kt-pct { position: absolute; left: ${lx}px; width: ${lw}px; text-align: center; }
       .kt-num { font-weight: 900; line-height: 1; color: #fff; direction: ltr;
         text-shadow: 0 10px 40px rgba(0,0,0,.28); }
       .kt-numstk { justify-items: center; }
@@ -185,7 +194,7 @@
       .kt-pbar > i { background: var(--amber); }
 
       /* word stacks (the hook opener) — words hidden until spoken */
-      .kt-stack { position: absolute; left: ${gx0}px; width: ${gw}px; display: flex; flex-direction: column;
+      .kt-stack { position: absolute; left: ${lx}px; width: ${lw}px; display: flex; flex-direction: column;
         line-height: 1.02; }
       .kt-ln { white-space: nowrap; }
       .kt-w { display: inline-block; opacity: 0; }

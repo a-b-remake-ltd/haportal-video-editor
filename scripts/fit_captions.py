@@ -7,7 +7,8 @@ sofa or a bright logo trips a pixel detector and sends you chasing a caption bug
 not there.
 
 Anything over the limit is reported with the size it WOULD fit at, so you can either
-re-split the card or drop that one card's font size.
+re-split the card or drop that one card's font size. The limit is the centred lane
+(grid.centered_box: 800 px on Reels), so every plate sits on the frame centre, x 540.
 
     python3 scripts/fit_captions.py                 # report
     python3 scripts/fit_captions.py --apply         # write per-card "size" into captions.json
@@ -25,10 +26,10 @@ PAGE = """<!doctype html><meta charset="utf-8">
 <style>
 {faces}
   body {{ margin:0; background:#fff; }}
-  .p {{ display:inline-block; font-family:"{family}", sans-serif; font-weight:800;
+  .p {{ display:inline-block; font-family:"{family}", sans-serif; font-weight:{weight};
         line-height:1.0; white-space:nowrap; padding:20px 34px 26px; }}
   .ltr {{ unicode-bidi:isolate; direction:ltr; }}
-  .ai {{ font-family:"Roboto Slab", serif; font-weight:800; letter-spacing:.02em; }}
+  .ai {{ font-family:"Roboto Slab", serif; font-weight:{aiw}; letter-spacing:.02em; }}
 </style>
 <div id="out"></div>
 <script>
@@ -56,12 +57,15 @@ def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("--captions", default="captions.json")
     ap.add_argument("--max-width", type=int, default=None,
-                    help="default: the Reels safe-zone width (880 px) from scripts/grid.py")
+                    help="default: the widest plate that still sits on the frame centre "
+                         "(800 px on Reels, grid.centered_box)")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     if a.max_width is None:
-        a.max_width = grid.from_config(cfg)["safe_width"]
+        # 800, not the 880 px safe width: a plate up to 800 px sits on the frame centre
+        # (x 540); a wider one has to shift left to clear the rail and reads off-centre
+        a.max_width = grid.from_config(cfg)["max_centered_w"]
     b = cfg["brand"]
     base = b["caption_size"]
     sizes = [base, int(base * 0.90), int(base * 0.83), int(base * 0.76)]
@@ -75,7 +79,11 @@ def main():
                                  url_prefix="file://" + os.path.abspath(font_dir) + "/")
 
     caps = json.load(open(a.captions, encoding="utf-8"))
-    html = PAGE.format(faces=faces, family=b["font_family"],
+    # measure at the weight the layer will draw (the shadow style's 500 is narrower than
+    # the plate's 800; measuring at 800 re-split cards that fit)
+    weight = int(cfg.get("captions", {}).get("weight", 800))
+    html = PAGE.format(faces=faces, family=b["font_family"], weight=weight,
+                       aiw=min(900, weight + 100),
                        dir=cfg["language"]["direction"],
                        cards=json.dumps(caps, ensure_ascii=False),
                        sizes=json.dumps(sizes))
