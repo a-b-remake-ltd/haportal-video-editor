@@ -4,10 +4,21 @@
 Three jobs:
   1. overlay assets/captions.webm (VP9 + alpha) onto the HyperFrames render
   2. force the master to 8-bit bt709 SDR H.264 — and ASSERT it
-  3. master the audio to −14 LUFS ± 0.4, true peak ≈ −1.3 dBTP, AAC 320k — measured on
-     the encoded file and iterated (references/sound.md §Mastering). A quiet, peaky
-     AI-avatar render gets pre-gain + compression before the limiter; a normal voice a
-     gentle chain. `--audio-only mix.wav` runs (3) alone, to test a mix without a render.
+  3. master the audio to −14 LUFS ± 0.4 with a TRUE peak at or under config
+     render.target_peak_db (house −1.5; never above −1.0), AAC 320k — measured on the
+     encoded file and iterated (references/sound.md §Mastering). A quiet, peaky AI-avatar
+     render gets pre-gain + compression before the limiter; a normal voice a gentle chain.
+     `--audio-only mix.wav` runs (3) alone, to test a mix without a render. Both paths
+     FAIL (exit 1) when the encoded master misses the loudness or true-peak target;
+     `--check file` runs only that gate on a finished file.
+
+Why the true peak is iterated and not just set: alimiter caps the SAMPLE peak of the
+signal it sees. Even oversampled at 192 kHz, the trip back to 48 kHz and above all the AAC
+encoder rebuild the waveform between samples, and those inter-sample overs come back on
+top — measured +1 dB on a bright, transient-heavy mix (limiter at −1.5 dBFS, encoded
+master −0.5 dBTP, which a platform's own encoder then clips). The only honest number is
+ebur128 peak=true on the ENCODED file, so the ceiling walks down until that number is
+under the target, and the gain walks up to keep −14 LUFS.
 
 (2) matters because phone B-roll is HLG/bt2020, and when any HDR media is in the
 composition HyperFrames renders HEVC 10-bit bt2020/HLG. Every player then applies an
@@ -44,12 +55,30 @@ def loudness(src, chain):
 #   Without it the limiter clamps the voice peaks and the master sticks near −16 LUFS no
 #   matter how much gain goes in (measured: −15.9 with the old one-stage chain).
 #   NORMAL (≈ −20 LUFS): a gentle compressor, no pre-gain.
-# Then gain to a pre-limiter target, a 4× oversampled (192 kHz) limiter at 0.84 (−1.5 dBFS,
-# true peak ≈ −1.3) with auto-level OFF (level=true puts the peak straight back), AAC 320k.
-# The pre-limiter target starts at −12.8 (quiet) / −13.4 (normal) — the limiter shaves
-# about a dB — and is iterated on the MEASURED master until −14 ± 0.4 LUFS.
+# Then gain to a pre-limiter target, a 4× oversampled (192 kHz) limiter with auto-level OFF
+# (level=true puts the peak straight back), AAC 320k. The limiter's ceiling starts
+# CEIL_HEADROOM_DB under the true-peak target and is lowered by the measured overshoot
+# (+0.1 dB) whenever the ENCODED master's true peak lands above it. The pre-limiter target
+# starts at −12.8 (quiet) / −13.4 (normal) — the limiter shaves about a dB — and is moved
+# on the MEASURED master until −14 ± 0.4 LUFS. Both loops run together, ≤ MAX_PASSES.
 QUIET_BELOW = -25.0          # integrated LUFS of the render: at or below → the quiet chain
-LIMITER = "alimiter=limit=0.84:attack=2:release=60:level=false"
+TP_NEVER_ABOVE = -1.0        # dBTP: the hard ceiling whatever the config says
+TP_DEFAULT = -1.5            # dBTP: the house target when the config has none
+CEIL_HEADROOM_DB = 0.2       # first limiter ceiling = target − this
+CEIL_FLOOR_DB = 4.0          # never pull the ceiling more than this under the target
+MAX_PASSES = 8
+
+
+def tp_target(cfg):
+    """The true-peak target from config render.target_peak_db, clamped to ≤ −1.0 dBTP: a
+    config of −0.5 would let a platform's re-encode clip, so it is not honoured."""
+    t = float((cfg.get("render") or {}).get("target_peak_db", TP_DEFAULT))
+    return min(t, TP_NEVER_ABOVE)
+
+
+def limiter(ceil_db):
+    return (f"alimiter=limit={10 ** (ceil_db / 20.0):.5f}:attack=2:release=60:"
+            f"level=false")
 
 
 def comp_chain(i0):
@@ -65,9 +94,11 @@ def comp_chain(i0):
             "acompressor=threshold=0.08:ratio=2:attack=4:release=140:makeup=1", 0.6)
 
 
-def master_audio(src, out, target=-14.0, tol=0.4, work="build"):
-    """Master src's audio to an AAC 320k file at `target` LUFS. Returns a dict with the
-    chain, the measured loudness and true peak of the ENCODED file, and the passes."""
+def master_audio(src, out, target=-14.0, tol=0.4, work="build", tp_max=TP_DEFAULT):
+    """Master src's audio to an AAC 320k file at `target` LUFS with a true peak ≤ tp_max.
+    Returns a dict with the chain, the measured loudness and true peak of the ENCODED file,
+    the passes, and ok (both targets met)."""
+    tp_max = min(float(tp_max), TP_NEVER_ABOVE)
     os.makedirs(work, exist_ok=True)
     i0, tp0 = loudness(src, "")
     if i0 is None:
@@ -82,31 +113,49 @@ def master_audio(src, out, target=-14.0, tol=0.4, work="build"):
         sys.exit(f"compressor pass failed:\n{r.stderr}")
     ic, _ = loudness(c, "")
     pre_target = target + lead
+    ceil = tp_max - CEIL_HEADROOM_DB
     passes = []
-    for _ in range(5):
+    for _ in range(MAX_PASSES):
         gain = pre_target - ic
-        chain = f"aresample=192000,volume={gain:.2f}dB,{LIMITER},aresample=48000"
+        chain = f"aresample=192000,volume={gain:.2f}dB,{limiter(ceil)},aresample=48000"
         r = hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", c, "-af", chain,
                        "-c:a", "aac", "-b:a", "320k", "-ar", "48000", out])
         if r.returncode:
             sys.exit(f"master encode failed:\n{r.stderr}")
         im, tp = loudness(out, "")          # measure the ENCODED master, not the chain
-        passes.append((round(pre_target, 2), im, tp))
-        if im is None or abs(im - target) <= min(tol, 0.15):
+        passes.append((round(pre_target, 2), round(ceil, 2), im, tp))
+        if im is None or tp is None:
             break
+        tp_ok = tp <= tp_max
+        i_ok = abs(im - target) <= min(tol, 0.15)
+        if tp_ok and i_ok:
+            break
+        if not tp_ok:
+            if ceil - (tp - tp_max) - 0.1 < tp_max - CEIL_FLOOR_DB:
+                break                       # the material will not go there: report it
+            ceil -= (tp - tp_max) + 0.1
+        # a lower ceiling also shaves loudness; the next pass's gain wins it back
         pre_target += target - im
-    ok = im is not None and abs(im - target) <= tol
+    ok = (im is not None and tp is not None and abs(im - target) <= tol and tp <= tp_max)
     return {"input_lufs": i0, "input_tp": tp0, "chain_name": name, "comp": comp,
-            "limiter": chain, "lufs": im, "tp": tp, "passes": passes, "ok": ok}
+            "limiter": chain, "lufs": im, "tp": tp, "tp_max": tp_max, "passes": passes,
+            "ok": ok}
 
 
 def report_master(m, target):
     print(f"  master: render {m['input_lufs']:.1f} LUFS / {m['input_tp']:.1f} dBTP, "
           f"chain {m['chain_name']}")
-    for i, (pt, im, tp) in enumerate(m["passes"], 1):
-        print(f"    pass {i}: pre-limiter {pt:.2f} → {im:.1f} LUFS, true peak {tp:.1f} dBTP")
-    mark = "✓" if m["ok"] else "✗ OUTSIDE ±0.4"
-    print(f"  {mark} {m['lufs']:.1f} LUFS (target {target:.0f}), true peak {m['tp']:.1f} dBTP, AAC 320k")
+    for i, (pt, ceil, im, tp) in enumerate(m["passes"], 1):
+        print(f"    pass {i}: pre-limiter {pt:.2f}, ceiling {ceil:.2f} dBFS → {im:.1f} LUFS, "
+              f"true peak {tp:.2f} dBTP")
+    bad = []
+    if m["lufs"] is None or abs(m["lufs"] - target) > 0.4:
+        bad.append("LOUDNESS OUTSIDE ±0.4")
+    if m["tp"] is None or m["tp"] > m["tp_max"]:
+        bad.append(f"TRUE PEAK ABOVE {m['tp_max']:.1f} dBTP")
+    mark = "✓" if not bad else "✗ " + ", ".join(bad)
+    print(f"  {mark} {m['lufs']:.1f} LUFS (target {target:.0f}), true peak {m['tp']:.2f} dBTP "
+          f"(≤ {m['tp_max']:.1f}), AAC 320k")
 
 
 def newest_render(d="renders"):
@@ -131,15 +180,28 @@ def main():
     ap.add_argument("--audio-only", metavar="MIX",
                     help="master just this file's audio to --out (.m4a): test a mix "
                          "without a render")
+    ap.add_argument("--check", metavar="FILE",
+                    help="only MEASURE a finished file (mp4/m4a) against the loudness and "
+                         "true-peak targets; exit 1 when it misses (the gate on its own)")
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
     target = float(cfg["render"].get("target_lufs", -14.0))
+    tp_max = tp_target(cfg)
+
+    if a.check:
+        ci, ctp = loudness(a.check, "")
+        if ci is None or ctp is None:
+            sys.exit(f"  ✗ no audio measured in {a.check}")
+        ok = abs(ci - target) <= 0.4 and ctp <= tp_max
+        print(f"  {'✓' if ok else '✗'} {a.check}: {ci:.1f} LUFS (target {target:.0f} ± 0.4), "
+              f"true peak {ctp:.2f} dBTP (≤ {tp_max:.1f})")
+        return 0 if ok else 1
 
     if a.audio_only:
         out = a.out if a.out.endswith((".m4a", ".mp4", ".aac")) and a.out != "renders/final.mp4" \
             else os.path.splitext(a.audio_only)[0] + "_master.m4a"
-        m = master_audio(a.audio_only, out, target)
+        m = master_audio(a.audio_only, out, target, tp_max=tp_max)
         if not m:
             sys.exit("no audio measured")
         report_master(m, target)
@@ -178,9 +240,14 @@ def main():
     if not a.no_loudness:
         # Master the audio on its own first (cheap to iterate: no video re-encode), then mux
         # the measured AAC into the video untouched.
-        m = master_audio(base, "build/master_audio.m4a", target)
+        m = master_audio(base, "build/master_audio.m4a", target, tp_max=tp_max)
         if m:
             report_master(m, target)
+            if not m["ok"]:
+                # stop BEFORE the (slow) video encode: a master that misses the target is
+                # not a deliverable, and the passes above say which way it missed
+                sys.exit("  ✗ audio master missed its target — see the passes above "
+                         "(references/sound.md §Mastering)")
             ai = cmd.count("-i")                # index of the next input
             last = max(i for i, x in enumerate(cmd) if x == "-i") + 2
             cmd[last:last] = ["-i", "build/master_audio.m4a"]   # inputs before output options
@@ -215,20 +282,30 @@ def main():
     if bad:
         sys.exit(f"\n  ✗ MASTER IS STILL HDR-TAGGED: {bad}")
 
-    vol = hfcfg.run(["ffmpeg", "-nostdin", "-i", a.out, "-af", "volumedetect",
-                     "-f", "null", "-"]).stderr
-    m = re.search(r"max_volume: ([-0-9.]+) dB", vol)
-    peak = float(m.group(1)) if m else None
+    # The gate on the DELIVERABLE: the muxed file's own integrated loudness and TRUE peak
+    # (not volumedetect's sample peak, which reads ~0.5-1 dB under the true peak of an AAC
+    # master and passed a −0.5 dBTP file as "−1.1 dB, fine").
+    fi, ftp = loudness(a.out, "")
     bit = re.search(r"bit_rate=(\d+)", q)
     mbps = int(bit.group(1)) / 1e6 if bit else 0
 
     print(f"\n  ✓ SDR bt709 — {a.out}")
     print(f"  bitrate {mbps:.1f} Mbps"
           f"{'' if mbps >= 28 else '   ← LOW, render with --video-bitrate ' + br}")
-    if peak is not None:
-        ok = -3.0 <= peak <= -0.6
-        print(f"  audio peak {peak:+.1f} dBFS"
-              f"{'' if ok else '   ← target -1 to -2 dB'}")
+    if fi is None or ftp is None:
+        sys.exit("  ✗ could not measure the master's audio")
+    loud_ok = abs(fi - target) <= 0.4
+    tp_ok = ftp <= tp_max
+    print(f"  audio {fi:.1f} LUFS, true peak {ftp:.2f} dBTP "
+          f"(targets {target:.0f} ± 0.4, ≤ {tp_max:.1f})")
+    if not (loud_ok and tp_ok):
+        msg = ("  ✗ MASTER AUDIO OFF TARGET: " +
+               ", ".join(x for x, bad in (("loudness", not loud_ok), ("true peak", not tp_ok))
+                         if bad))
+        if a.no_loudness:
+            print(msg + " (--no-loudness: the render's audio was copied as is)")
+        else:
+            sys.exit(msg)
     return 0
 
 

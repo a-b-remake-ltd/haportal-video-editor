@@ -16,6 +16,9 @@ gates of references/qa.md:
               gradients, clip-paths: ≥ 40 elements renders black — counted in Chrome,
               hidden ones included); every local asset the page loads exists
   camera      any rotation / sway on the footage rides on a scale ≥ 1.07 (black corners)
+  A-roll      audio as long as the video (± 1 frame); every cut boundary within 10 ms of the
+              raw (cross-correlated); no source audio used twice; master fps == config
+              project.fps == A-roll fps
   render      freezedetect=n=0.002:d=0.6 and blackdetect=d=0.2:pix_th=0.05 report nothing;
               loudness −14 ± 0.4 LUFS, true peak ≤ −1.0 dBTP (target ≈ −1.3)
   intelligibility  the master's speech re-transcribed with the same engine + glossary,
@@ -73,7 +76,9 @@ def check_dead_space(aroll):
     whole = False
     if os.path.exists("src/bounds.json"):
         bj = json.load(open("src/bounds.json"))
-        whole = len(bj.get("segments", [])) == 1 and "fps" in bj
+        # "mode" since the sample-exact cutter; older bounds: one segment + fps = whole
+        whole = bj.get("mode") == "whole" or (
+            "mode" not in bj and len(bj.get("segments", [])) == 1 and "fps" in bj)
     out = hfcfg.run(["ffmpeg", "-nostdin", "-i", aroll,
                      "-af", "silencedetect=noise=-33dB:d=0.3", "-f", "null", "-"]).stderr
     starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", out)]
@@ -127,6 +132,71 @@ def check_drift(segments_dir="segments"):
             ok.append(f"segment timing: frame-exact, planned == real ({cum:.3f}s)")
     elif not bad:
         ok.append(f"segment timing: all frame-aligned ({cum:.3f}s)")
+
+
+def check_aroll_sync(aroll):
+    """GATES on the A-roll's lip sync (cut_aroll.py runs the same ones at cut time):
+
+      * the audio stream is as long as the video, to within one frame — an A-roll whose
+        audio outlasts its picture by ~20 ms per join was cut with per-segment AAC
+        joined by -c copy, and its voice slides later behind the lips at every cut
+      * at every segment boundary, a 0.5 s window of the A-roll's audio sits within
+        10 ms of the same window in the raw (cross-correlation, src/bounds.json → src)
+      * no two segments share source audio (a word heard twice at a join)
+
+    Counting video packets cannot see any of this: the frame count of a drifting
+    A-roll is perfect."""
+    import cut_aroll as cut
+    if not os.path.exists(aroll):
+        return
+    bj = json.load(open("src/bounds.json")) if os.path.exists("src/bounds.json") else {}
+    segs = bj.get("segments") or []
+    src = bj.get("src")
+    if segs and not src:
+        warns.append("src/bounds.json has no 'src' (cut by an older cut_aroll.py) — lip sync at "
+                     "the boundaries cannot be verified; re-cut with the current cut_aroll.py")
+    elif src and not os.path.exists(src):
+        warns.append(f"the raw ({src}) is not here — lip sync at the boundaries not verified")
+    bad = cut.sync_problems(aroll, src if src and os.path.exists(src) else None, segs,
+                            verbose=False)
+    if all("src_start" in s and "src_end" in s for s in segs):
+        bad += cut.overlap_problems(segs)[0]
+    if bad:
+        issues.append("A-ROLL OUT OF SYNC (re-cut with scripts/cut_aroll.py): " + "; ".join(bad[:4]))
+    else:
+        ok.append(f"A-roll A/V: audio as long as the video"
+                  + (f", every one of {len(segs)} boundaries within "
+                     f"{cut.SYNC_TOL * 1000:.0f} ms of the raw" if src and os.path.exists(src) else ""))
+    mark(11, not bad, "A-roll lip sync " + ("out" if bad else "in sync"))
+
+
+def check_fps(cfg, aroll=None, render=None):
+    """GATE: one frame rate end to end — the master's == config project.fps == the
+    A-roll's (and src/bounds.json's). `hyperframes render` without --fps falls back to
+    30, so a 25 fps A-roll rendered without it is resampled: frames repeat, every beat
+    snapped to a 0.04 s grid lands between frames, and the motion judders."""
+    import cut_aroll as cut
+    want = float(cfg["project"].get("fps", 25))
+    got = {}
+    if aroll and os.path.exists(aroll):
+        got["A-roll"] = cut.probe_fps(aroll)
+    if render and os.path.exists(render):
+        got["master"] = cut.probe_fps(render)
+    if os.path.exists("src/bounds.json"):
+        f = json.load(open("src/bounds.json")).get("fps")
+        if f:
+            got["src/bounds.json"] = float(f)
+    if not got:
+        return
+    bad = {k: v for k, v in got.items() if abs(v - want) > 0.01}
+    if bad:
+        issues.append(f"FPS MISMATCH: config project.fps is {want:g}, but "
+                      + ", ".join(f"the {k} is {v:g}" for k, v in bad.items())
+                      + " — set project.fps to the A-roll's rate and render with "
+                        "`--fps <project.fps>`")
+    else:
+        ok.append(f"fps: {want:g} everywhere (" + ", ".join(got) + ")")
+    mark(11, not bad, f"fps {want:g}" + (" mismatch" if bad else ""))
 
 
 def _caption_rows(index_html, captions_json):
@@ -999,6 +1069,8 @@ def main():
     transcript = a.transcript or ("src/words.json" if os.path.exists("src/words.json") else None)
 
     check_drift()
+    aroll = a.aroll or ("assets/aroll.mp4" if os.path.exists("assets/aroll.mp4") else None)
+    check_fps(cfg, aroll, a.render)
     check_caption_continuity(cfg, a.html, a.captions, transcript)
     check_caption_windows(a.captions)
     check_caption_language(cfg, a.captions)
@@ -1017,6 +1089,7 @@ def main():
         check_words_covered(a.captions, a.transcript, cfg["language"].get("typos"))
     if a.aroll:
         check_dead_space(a.aroll)
+        check_aroll_sync(a.aroll)
     if a.render:
         check_render(a.render, cfg)
         check_loudness(a.render, cfg)

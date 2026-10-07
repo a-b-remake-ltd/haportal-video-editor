@@ -2,6 +2,7 @@
 """Word-level transcription — free, local, Hebrew first.
 
     python3 scripts/transcribe.py raw.mp4                       # → src/aroll.json + src/words.json
+    python3 scripts/transcribe.py raw.mp4 --out build/raw.json  # → build/raw.json + build/raw_words.json
     python3 scripts/transcribe.py assets/aroll.mp4 --out src/aroll.json --words src/words.json
     python3 scripts/transcribe.py take1.mp4 take2.mp4 --out-dir src/transcripts   # model loads once
     python3 scripts/transcribe.py raw.mp4 --start 12 --end 24 --compare          # second opinion
@@ -35,7 +36,9 @@ WHY each choice:
 Outputs
   --out    whisper-style json {"segments":[{"start","end","text","words":[{"word","start",
            "end","probability"}]}], ...}   (what scripts/captions.py and pack_transcript.py read)
-  --words  [[start, end, "word"], ...]       (what scripts/captions.py reads by default)
+  --words  [[start, end, "word"], ...]       (what scripts/captions.py reads by default).
+           Without --words it lands beside --out as <stem>_words.json; src/words.json
+           (the caption source) is written only by the bare default invocation.
   --flags  markdown review list
 
 Times are always in the SOURCE file's timebase, also with --start/--end.
@@ -614,14 +617,36 @@ def compare(path, lang, engines, start=None, end=None, glossary=None, verbose=Tr
 
 # ======================================================================= main
 
+def output_paths(out=None, words=None):
+    """(out, words) for a single-file run.
+
+    src/words.json is THE caption source (the cut's words, with the intended spellings
+    from xcheck.py). It used to be the --words default even when --out pointed
+    elsewhere, so a QA re-transcription (`--out build/qa/x.json`) silently replaced the
+    caption source with raw whisper text. Now the words file follows --out
+    (<stem>_words.json beside it), and only the bare default invocation writes
+    src/aroll.json + src/words.json."""
+    if out is None and words is None:
+        return "src/aroll.json", "src/words.json"
+    if out is None:
+        out = "src/aroll.json"
+    if words is None:
+        stem = os.path.splitext(out)[0]
+        words = f"{stem}_words.json"
+    return out, words
+
+
 def main():
     ap = hfcfg.arg_parser(__doc__.split("\n\n")[0])
     ap.add_argument("media", nargs="+", help="audio/video file(s)")
     ap.add_argument("--engine", choices=ENGINES, help="default: config language.transcriber")
     ap.add_argument("--lang", help="language code (default: config language.code, he)")
     ap.add_argument("--model", help="override the engine's model")
-    ap.add_argument("--out", default="src/aroll.json", help="whisper-style json (one file)")
-    ap.add_argument("--words", default="src/words.json", help="[[s,e,w]] list (one file)")
+    ap.add_argument("--out", default=None,
+                    help="whisper-style json (one file). Default: src/aroll.json")
+    ap.add_argument("--words", default=None,
+                    help="[[s,e,w]] list (one file). Default: <out stem>_words.json next to "
+                         "--out; src/words.json only when neither --out nor --words is given")
     ap.add_argument("--out-dir", default="src/transcripts",
                     help="several files: one <name>.json each here")
     ap.add_argument("--flags", default="src/transcript_flags.md",
@@ -663,14 +688,16 @@ def main():
     if ENGINE_MODULE[eng]:
         hfcfg.ensure_deps([ENGINE_MODULE[eng]])
 
+    out_path, words_path = output_paths(a.out, a.words)
     results = []
     for m in a.media:
         r = transcribe(m, lang, eng, mdl, glossary, a.start, a.end,
                        vad=not a.no_vad, use_cache=not a.force)
         results.append(r)
         if len(a.media) == 1:
-            write_outputs(r, a.out, a.words)
-            print(f"  → {a.out}  {a.words}")
+            write_outputs(r, out_path, words_path)
+            print(f"  → {out_path}")
+            print(f"  → {words_path}  (word list)")
         else:
             stem = os.path.splitext(os.path.basename(m))[0]
             p = os.path.join(a.out_dir, f"{stem}.json")

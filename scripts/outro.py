@@ -48,12 +48,15 @@ Usage
   python3 scripts/outro.py sfx                        # synthesise the outro cues
   python3 scripts/outro.py preview --style portal [--brand brand/brand.json]
           [--aroll assets/aroll.mp4] [--out build/outro_preview] [--render]
+          (--render on the portal also PROVES the circle drew: 3 frames, pixel test)
+  python3 scripts/outro.py selftest                   # negative tests of the outro gates
 """
 from __future__ import annotations
 
 import json
 import math
 import os
+import re
 import shutil
 import string
 import sys
@@ -118,6 +121,67 @@ def _contrast(a, b):
 def _mix(a, b, t):
     a, b = _rgb(a), _rgb(b)
     return "#%02x%02x%02x" % tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+# ------------------------------------------------- tweened CSS strings (GSAP)
+def cssn(v):
+    """A number for INSIDE a tweened CSS string, written the way JavaScript prints it
+    ("340", "117.479", never "340.0" or ".5").
+
+    WHY: GSAP interpolates a string like clipPath number by number, and finds each END
+    number's unit as `token.substr(String(parseFloat(token)).length)`. Python's
+    f"{340.0}px" gives "340.0px": parseFloat → 340, String(340) is 3 characters, so the
+    "unit" comes out as ".0px", which never equals the start's "px" (the browser hands
+    GSAP the start already normalised to "1465px"). GSAP then runs a unit conversion that
+    yields garbage, the browser rejects every in-between value, and the clip-path JUMPS
+    from the first value to the last when the tween ends. That is why the portal's circle
+    never rendered: the frame stayed full, then popped to the small circle. Any value that
+    happens to be whole (a clamped door top of 30.0) breaks the same way."""
+    x = round(float(v), 3)
+    if x == 0:
+        return "0"
+    if x == int(x):
+        return str(int(x))
+    return repr(x)
+
+
+_TWEEN_STR = re.compile(r'(clipPath|filter|transformOrigin)\s*:\s*"([^"]*)"')
+_CSS_NUM = re.compile(r'(?<![\w#.])([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)([a-z%]*)')
+
+
+def tween_string_problems(js_lines):
+    """The gate for every string GSAP tweens in the outro timeline. Two ways a CSS string
+    silently stops interpolating (the tween JUMPS at its end instead):
+      * a number not in JavaScript's own form ("340.0px", ".5px", "1e-05px") — see cssn();
+      * an inset() the browser can shorten: Chrome serialises inset() like the margin
+        shorthand, so equal right/left (or radii 2 and 4) drop values, the two ends end up
+        with different number counts, and GSAP pairs them wrongly. The gate and line
+        styles keep every value distinct for exactly this reason.
+    Returns a list of human-readable problems ([] = clean)."""
+    out = []
+    for ln in js_lines:
+        for prop, val in _TWEEN_STR.findall(ln):
+            for num, unit in _CSS_NUM.findall(val):
+                if num != cssn(num):
+                    out.append(f"{prop} \"{val}\": {num}{unit} is not written the way "
+                               f"JavaScript prints it ({cssn(num)}{unit}) — GSAP reads its "
+                               f"unit as {(num + unit)[len(cssn(num)):]!r} and the tween jumps")
+            for body in re.findall(r"inset\(([^)]*)\)", val):
+                nums = [float(n) for n, _ in _CSS_NUM.findall(body)]
+                if len(nums) >= 4 and nums[1] == nums[3]:
+                    out.append(f"{prop} \"{val}\": inset right == left — the browser "
+                               f"shortens it and GSAP cannot interpolate")
+                if "round" in body and len(nums) >= 8 and nums[5] == nums[7]:
+                    out.append(f"{prop} \"{val}\": inset radii 2 == 4 — the browser "
+                               f"shortens it and GSAP cannot interpolate")
+    return out
+
+
+def check_tween_strings(js_lines, where="outro"):
+    bad = tween_string_problems(js_lines)
+    if bad:
+        sys.exit(f"{where}: {len(bad)} tweened CSS string(s) would not interpolate:\n  " +
+                 "\n  ".join(bad))
 
 
 # ------------------------------------------------------------------ settings
@@ -832,8 +896,8 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         t_land = O + 1.24
         js += [
             # the speaker frame closes into a circle around the face …
-            f"      tl.fromTo({FOOT}, {{ clipPath: \"circle({Rbig}px at {r(fcx)}px {r(fcy)}px)\" }}, "
-            f"{{ clipPath: \"circle({r(R0)}px at {r(fcx)}px {r(fcy)}px)\", duration: 0.6, "
+            f"      tl.fromTo({FOOT}, {{ clipPath: \"circle({cssn(Rbig)}px at {cssn(fcx)}px {cssn(fcy)}px)\" }}, "
+            f"{{ clipPath: \"circle({cssn(R0)}px at {cssn(fcx)}px {cssn(fcy)}px)\", duration: 0.6, "
             f"ease: \"power3.inOut\", immediateRender: false }}, {r(O + 0.02)});",
             # … then flies and shrinks into the landing circle
             f"      tl.fromTo({FOOT}, {{ x: 0, y: {r(y0)}, scale: {s0} }}, {{ x: {r(tx)}, "
@@ -850,11 +914,11 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
                 f"      tl.fromTo(\"#ologo\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.18, "
                 f"ease: \"none\", immediateRender: false }}, {r(O + 0.86)});",
                 f"      tl.fromTo(\"#ologo\", {{ rotation: -120, scale: 1.3, "
-                f"clipPath: \"circle({r(hr * 0.98)}px at {r(lox)}px {r(loy)}px)\" }}, "
-                f"{{ rotation: 0, scale: 1, clipPath: \"circle({r(ring)}px at {r(lox)}px {r(loy)}px)\", "
+                f"clipPath: \"circle({cssn(hr * 0.98)}px at {cssn(lox)}px {cssn(loy)}px)\" }}, "
+                f"{{ rotation: 0, scale: 1, clipPath: \"circle({cssn(ring)}px at {cssn(lox)}px {cssn(loy)}px)\", "
                 f"duration: 0.62, ease: \"power3.out\", immediateRender: false }}, {r(O + 0.86)});",
-                f"      tl.fromTo(\"#ologo\", {{ clipPath: \"circle({r(ring)}px at {r(lox)}px {r(loy)}px)\" }}, "
-                f"{{ clipPath: \"circle({r(cover_r)}px at {r(lox)}px {r(loy)}px)\", duration: 0.75, "
+                f"      tl.fromTo(\"#ologo\", {{ clipPath: \"circle({cssn(ring)}px at {cssn(lox)}px {cssn(loy)}px)\" }}, "
+                f"{{ clipPath: \"circle({cssn(cover_r)}px at {cssn(lox)}px {cssn(loy)}px)\", duration: 0.75, "
                 f"ease: \"power2.inOut\", immediateRender: false }}, {r(O + 1.48)});",
                 f"      tl.to(\"#ofreeze\", {{ opacity: 0, duration: 0.4, ease: \"power1.in\" }}, "
                 f"{r(O + 1.75)});",
@@ -871,8 +935,8 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
                 f"{{ attr: {{ r: {r(iris_end)}, \"stroke-width\": 3 }}, duration: {d_open}, "
                 f"ease: \"expo.inOut\", immediateRender: false }}, {r(t_open)});",
                 f"      tl.set(\"#ologo\", {{ opacity: 1 }}, {r(t_open)});",
-                f"      tl.fromTo(\"#ologo\", {{ scale: 1.06, clipPath: \"circle(0px at {r(lox)}px {r(loy)}px)\" }}, "
-                f"{{ scale: 1, clipPath: \"circle({r(iris_end - 1.5)}px at {r(lox)}px {r(loy)}px)\", "
+                f"      tl.fromTo(\"#ologo\", {{ scale: 1.06, clipPath: \"circle(0px at {cssn(lox)}px {cssn(loy)}px)\" }}, "
+                f"{{ scale: 1, clipPath: \"circle({cssn(iris_end - 1.5)}px at {cssn(lox)}px {cssn(loy)}px)\", "
                 f"duration: {d_open}, ease: \"expo.inOut\", immediateRender: false }}, {r(t_open)});",
                 f"      tl.to(\"#odisc\", {{ opacity: 0, duration: 0.24, ease: \"power1.in\" }}, "
                 f"{r(t_open + d_open * 0.55)});",
@@ -966,6 +1030,14 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             "land": {"x": round(land_x, 1), "y": round(land_y, 1), "r": round(land_r, 1)},
             "logo_box": [round(lx), round(ly), round(lx + lw), round(ly + lh)],
             "voice_ref_lufs": voice_ref}
+    if style == "portal":
+        # what `preview --render` needs to PROVE the circle drew (check_circle_render)
+        info["circle_close"] = {
+            "x": r(fcx), "y": r(fcy), "r_from": Rbig, "r_to": r(R0), "t0": r(O + 0.02),
+            "dur": 0.6, "scale": s0, "origin": [r(oxo), r(oyo)],
+            "bg": ({"kind": "dark", "a": col["grad_a"], "b": col["grad_b"], "angle": 170}
+                   if bg_kind == "dark" else {"kind": "solid", "hex": bg_hex})}
+    check_tween_strings(js, f"outro ({style})")
     return {"style": style, "start": O, "end": E, "aroll_end": round(aroll_end, 3),
             "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
             "bed": {"swell_from": r(O + 0.1), "fade_from": r(E - 1.0), "fade_to": r(E - F),
@@ -1187,7 +1259,7 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
     # numbers is made distinct by a sub-pixel epsilon (invisible), on both ends. One radius
     # per corner too: the elliptical "a b c d / e f g h" form normalises the same way.
     def inset(vals, corners):
-        v = [r(x + 0.01 * i) for i, x in enumerate(list(vals) + list(corners))]
+        v = [cssn(x + 0.01 * i) for i, x in enumerate(list(vals) + list(corners))]
         return (f"inset({v[0]}px {v[1]}px {v[2]}px {v[3]}px "
                 f"round {v[4]}px {v[5]}px {v[6]}px {v[7]}px)")
     if shape == "arch":
@@ -1361,7 +1433,7 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
           f"becomes the logo: door {r(Dw)}x{r(Dh)} → the mark's {shape}.",
           f"      tl.set(\"#ofreeze\", {{ x: 0, y: {r(y0)}, scale: {s0} }}, 0);",
           # reset the camera: no punch-in, sway or panel offset may leak into the outro
-          f"      tl.set({FOOT}, {{ transformOrigin: \"{r(dcx)}px {r(dcy)}px\", x: 0, y: 0, "
+          f"      tl.set({FOOT}, {{ transformOrigin: \"{cssn(dcx)}px {cssn(dcy)}px\", x: 0, y: 0, "
           f"scale: 1, rotation: 0 }}, {r(O)});",
           f"      if (document.querySelector(\"#cam\")) tl.set(\"#cam\", {{ x: 0, y: 0, scale: 1, "
           f"rotation: 0 }}, {r(O)});",
@@ -1466,6 +1538,7 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
             "voice_ref_lufs": voice_ref,
             # also here so build/outro.json (written from info) carries them to sfx.py
             "cues": cues}
+    check_tween_strings(js, "outro (gate)")
     return {"style": "gate", "start": O, "end": E, "aroll_end": round(aroll_end, 3),
             "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
             "cues": cues,
@@ -1594,6 +1667,166 @@ def extend_bed(s, plan_, cfg):
     bed = dict(plan_["bed"], fade_to=min(plan_["bed"]["fade_to"], start + dur))
     lane = bed_automation(start, vol, dict(plan_, bed=bed), out_vol)
     return dur, f" data-automation='{lane}'"
+
+
+# ------------------------------------------------------- render self-check
+CHECK_SCALE = 4             # frames are read at W/4 x H/4: patches, not pixels, matter
+CHECK_BG_TOL = 22           # mean |ΔRGB| for "this patch IS the end background"
+CHECK_SAME_TOL = 22         # mean |ΔRGB| for "this patch is the footage it was before"
+
+
+def _power3_inout(p):
+    p = max(0.0, min(1.0, p))
+    return 4 * p ** 3 if p < 0.5 else 1 - (-2 * p + 2) ** 3 / 2
+
+
+def _bg_at(bg, x, y, W, H):
+    """The end background's colour at composition px (x, y): a solid hex, or the dark
+    style's linear-gradient(170deg, a, b) evaluated the way CSS lays it out."""
+    if bg.get("kind") != "dark":
+        return _rgb(bg["hex"])
+    a, b = _rgb(bg["a"]), _rgb(bg["b"])
+    th = math.radians(float(bg.get("angle", 170)))
+    dx, dy = math.sin(th), -math.cos(th)
+    L = abs(W * dx) + abs(H * dy)
+    t = max(0.0, min(1.0, ((x - W / 2) * dx + (y - H / 2) * dy) / L + 0.5))
+    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
+
+
+def _patch(buf, w, h, x, y, k=2):
+    """Mean RGB of a (2k+1)² patch around (x, y) in a w x h rgb24 frame."""
+    acc, n = [0.0, 0.0, 0.0], 0
+    for yy in range(max(0, int(y) - k), min(h, int(y) + k + 1)):
+        for xx in range(max(0, int(x) - k), min(w, int(x) + k + 1)):
+            p = (yy * w + xx) * 3
+            for i in range(3):
+                acc[i] += buf[p + i]
+            n += 1
+    return tuple(v / max(1, n) for v in acc)
+
+
+def _dist(a, b):
+    return sum(abs(a[i] - b[i]) for i in range(3)) / 3.0
+
+
+def circle_frame_verdict(before, frame, cc, t, W, H):
+    """Is the portal's closing circle VISIBLE in `frame` (rgb24 at W/CHECK_SCALE)?
+
+    `before` is the same view just before the outro (full footage). At time t the circle
+    has radius r(t) (power3.inOut from r_from to r_to), drawn in the A-roll's own box and
+    then scaled by the element's transform. Inside it the footage must still be there
+    (≈ before); a ring of points well OUTSIDE it must be the end background, not the
+    footage. Only points where the footage and the background actually differ can tell the
+    two apart; none → inconclusive. Returns (ok | None, detail)."""
+    k = CHECK_SCALE
+    w, h = W // k, H // k
+    p = (t - cc["t0"]) / cc["dur"]
+    rad = cc["r_from"] + (cc["r_to"] - cc["r_from"]) * _power3_inout(p)
+    s = float(cc.get("scale", 1.0))
+    ox, oy = cc["origin"]
+    cx, cy = ox + (cc["x"] - ox) * s, oy + (cc["y"] - oy) * s
+    rs = rad * s
+    inside = _dist(_patch(frame, w, h, cx / k, cy / k), _patch(before, w, h, cx / k, cy / k))
+    tested = clipped = 0
+    for i in range(24):
+        a = 2 * math.pi * i / 24
+        x, y = cx + (rs + 70) * math.cos(a), cy + (rs + 70) * math.sin(a)
+        if not (16 <= x <= W - 16 and 16 <= y <= H - 16):
+            continue
+        bg = _bg_at(cc["bg"], x, y, W, H)
+        was = _patch(before, w, h, x / k, y / k)
+        if _dist(was, bg) < 2 * CHECK_BG_TOL:
+            continue                       # footage looks like the background here
+        tested += 1
+        if _dist(_patch(frame, w, h, x / k, y / k), bg) <= CHECK_BG_TOL:
+            clipped += 1
+    detail = (f"t {t:.2f}s r {rs:.0f}px: inside Δ{inside:.0f} vs footage, "
+              f"outside {clipped}/{tested} points show the background")
+    if tested < 3:
+        return None, detail + " (inconclusive: footage ≈ background there)"
+    return (inside <= CHECK_SAME_TOL and clipped >= 0.8 * tested), detail
+
+
+def check_circle_render(mp4, cc, W, H, say=print):
+    """The self-check `outro.py preview --style portal --render` runs on its own render:
+    three frames late in the circle's close must SHOW the circle (footage inside, the end
+    background outside). This is the test that would have caught the portal never
+    clipping: every frame was full-screen footage until the circle popped in at the end.
+    Returns True / False / None (inconclusive)."""
+    k = CHECK_SCALE
+    before = _raw_rgb(mp4, W // k, H // k, at=cc["t0"] - 0.12)
+    verdicts = []
+    for f in (0.66, 0.85, 0.96):
+        t = cc["t0"] + f * cc["dur"]
+        ok, detail = circle_frame_verdict(before, _raw_rgb(mp4, W // k, H // k, at=t),
+                                          cc, t, W, H)
+        say(f"  circle check {'✓' if ok else ('?' if ok is None else '✗')} {detail}")
+        verdicts.append(ok)
+    if any(v is False for v in verdicts):
+        return False
+    return None if all(v is None for v in verdicts) else True
+
+
+def selftest():
+    """Negative tests for the two outro gates — run `outro.py selftest`. Exit 1 on any
+    failure. No render needed: the circle check runs on synthetic frames."""
+    fails = []
+
+    def expect(cond, what):
+        print(f"  {'✓' if cond else '✗'} {what}")
+        if not cond:
+            fails.append(what)
+
+    # tween strings
+    expect(tween_string_problems(['tl.fromTo(a, { clipPath: "circle(1465px at 540px 565.12px)" }, '
+                                  '{ clipPath: "circle(340.0px at 540.0px 565.12px)" }, 1);']),
+           "rejects circle(340.0px …) — GSAP reads the unit as '.0px'")
+    expect(tween_string_problems(['tl.to(a, { clipPath: "circle(.5px at 1px 2px)" }, 1);']),
+           "rejects .5px")
+    expect(tween_string_problems(['tl.to(a, { clipPath: "inset(0px 4px 0px 4px)" }, 1);']),
+           "rejects inset with right == left")
+    expect(not tween_string_problems([
+        'tl.fromTo(a, { clipPath: "circle(1465px at 540px 565.12px)" }, '
+        '{ clipPath: "circle(340px at 540px 565.12px)" }, 1);',
+        'tl.to(a, { clipPath: "inset(0px 0.01px 0.02px 1080.03px)", '
+        'filter: "drop-shadow(0px 0px 26px rgba(1,2,3,0.9))" }, 1);']),
+        "accepts canonical circle / inset / filter strings")
+    expect(cssn(340.0) == "340" and cssn(0.5) == "0.5" and cssn(-0.0) == "0"
+           and cssn(117.4789) == "117.479", "cssn writes numbers the way JS prints them")
+
+    # circle pixel check on synthetic frames (paper background, a bright footage)
+    W, H, k = 1080, 1920, CHECK_SCALE
+    w, h = W // k, H // k
+    paper = "#f7f5f0"
+    cc = {"x": 540, "y": 565, "r_from": 1465, "r_to": 340, "t0": 0.0, "dur": 0.6,
+          "scale": 1.02, "origin": [540, 576], "bg": {"kind": "solid", "hex": paper}}
+
+    def frame(rad):
+        foot = bytearray(w * h * 3)
+        pr = _rgb(paper)
+        ox, oy = cc["origin"]
+        cx, cy = ox + (cc["x"] - ox) * 1.02, oy + (cc["y"] - oy) * 1.02
+        for y in range(h):
+            for x in range(w):
+                X, Y = x * k + k / 2, y * k + k / 2
+                p = (y * w + x) * 3
+                if rad is None or math.hypot(X - cx, Y - cy) <= rad * 1.02:
+                    foot[p:p + 3] = bytes((40, 60 + int(Y // 30) % 120, 160))
+                else:
+                    foot[p:p + 3] = bytes(pr)
+        return bytes(foot)
+
+    before = frame(None)
+    t = 0.57
+    rad = 1465 + (340 - 1465) * _power3_inout(t / 0.6)
+    ok, d = circle_frame_verdict(before, frame(rad), cc, t, W, H)
+    expect(ok is True, f"a drawn circle passes ({d})")
+    ok, d = circle_frame_verdict(before, before, cc, t, W, H)
+    expect(ok is False, f"full-frame footage (the bug) fails ({d})")
+    ok, d = circle_frame_verdict(before, frame(0), cc, t, W, H)
+    expect(ok is False, f"an empty frame (circle lost) fails ({d})")
+    print(f"  {'all passed' if not fails else str(len(fails)) + ' FAILED'}")
+    return 1 if fails else 0
 
 
 # ---------------------------------------------------------------- preview
@@ -1791,13 +2024,22 @@ def preview(a):
         if r.returncode:
             sys.exit(f"render failed:\n{(r.stdout or '')[-1500:]}\n{(r.stderr or '')[-1500:]}")
         print(f"  rendered → {mp4}")
+        cc = p["info"].get("circle_close")
+        if cc:
+            v = check_circle_render(mp4, cc, W, H)
+            if v is False:
+                sys.exit("  ✗ the portal circle does not show in the render — the clip-path "
+                         "is not interpolating (see cssn / tween_string_problems)")
+            if v is None:
+                print("  ? circle check inconclusive (footage looks like the background); "
+                      "LOOK at the frames")
     return 0
 
 
 # -------------------------------------------------------------------- cli
 def main():
     ap = hfcfg.arg_parser(__doc__)
-    ap.add_argument("cmd", choices=["plan", "face", "sfx", "preview"])
+    ap.add_argument("cmd", choices=["plan", "face", "sfx", "preview", "selftest"])
     ap.add_argument("--style", choices=STYLES + ("auto",), default=None)
     ap.add_argument("--brand", help="brand.json (default: next to brand.css)")
     ap.add_argument("--aroll", default=None)
@@ -1810,6 +2052,8 @@ def main():
     ap.add_argument("--render", action="store_true", help="preview: also render a draft mp4")
     ap.add_argument("--force", action="store_true", help="sfx: rebuild the cues")
     a = ap.parse_args()
+    if a.cmd == "selftest":
+        return selftest()
     hfcfg.require("ffmpeg", "ffprobe")
     cfg = hfcfg.load(a.config)
 
