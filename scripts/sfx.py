@@ -2,19 +2,32 @@
 """Sound effects: the named library, custom per-video cues, and PLACEMENT off the words.
 references/sound.md §SFX.
 
-    python3 scripts/sfx.py library                      # ensure the named set in assets/sfx/
+    python3 scripts/sfx.py library                      # the named set in assets/sfx/; with a key
+                                                        #   it also UPGRADES synthesised stand-ins
+    python3 scripts/sfx.py library --keep-synth         # …only fill what is missing
     python3 scripts/sfx.py library --from ~/my-sounds   # import files you own (name.wav/mp3)
     python3 scripts/sfx.py library --synth              # no key / no credits: synthesise all
+    python3 scripts/sfx.py status                       # where every cue came from
     python3 scripts/sfx.py gen "heavy steel bars slamming shut, metallic clang, short" --name bars
     python3 scripts/sfx.py place cues.json --apply      # scale + slide off words → media.json
     python3 scripts/sfx.py check build/master_words.json  # which cue sits on each misheard word
+    python3 scripts/sfx.py selftest                     # negative tests (no credits, no files)
 
 LIBRARY — every cue is a 48 kHz stereo wav, lead-in silence trimmed, peak −6 dBFS, ≤ 1.3 s
-(logo_sting ≈ 3.5 s), so any volume number means the same thing for every cue. A missing
-cue comes from, in order: --from DIR (files the user owns) → ElevenLabs sound-generation
-(when ELEVENLABS_API_KEY is set; credits checked first) → a synthesised fallback built
-here from sines and noise (free, owned by nobody, plainer than a generated cue).
-assets/sfx/library.json records where every file came from.
+(logo_sting ≈ 3.5 s), so any volume number means the same thing for every cue. A cue comes
+from, in order: --from DIR (files the user owns) → ElevenLabs sound-generation (when
+ELEVENLABS_API_KEY is set; credits checked first) → a synthesised fallback built here from
+sines and noise (free, owned by nobody, plainer than a generated cue).
+
+PROVENANCE — assets/sfx/library.json records, per cue, its kind (synth / elevenlabs /
+user), prompt and sha256. WHY: `doctor --install` synthesises the set at install time,
+when there is no key yet, and a project copies those stand-ins in; `library` used to fill
+only MISSING cues, so a user who added a key later kept the synthesised set forever.
+Now, with a key, `library` UPGRADES every synth stand-in to a generated cue (credits
+checked first; --keep-synth opts out). A copied file with no entry is recognised by its
+hash against the skill's own set; a file nobody recorded is "unknown" and never touched.
+After an upgrade, re-run the build: index.html clip durations were measured on the old
+files (the script names the cues index.html uses).
 
 PLACEMENT (§7.3) — cues are {"name", "t", "base_vol", "exempt"}:
 * Scale to THIS voice: k = clamp(10^((voiceMean_dB + 16.1)/20), 0.03, 1), voiceMean from
@@ -32,6 +45,7 @@ PLACEMENT (§7.3) — cues are {"name", "t", "base_vol", "exempt"}:
   them moderate (base ≤ 0.45).
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -44,7 +58,10 @@ import audiokit as ak  # noqa: E402
 SFX_DIR = "assets/sfx"
 SR = ak.SR
 GEN_URL = "/v1/sound-generation"
-CREDITS_PER_SEC = 40          # conservative (website rate); the API bills less
+# The GATE estimates high (website rate) so a batch never starts that it cannot finish;
+# the REPORT uses the measured API rate: 9 cues × 1.3 s cost 126 credits (≈ 11/s).
+CREDITS_PER_SEC = 40
+CREDITS_PER_SEC_EST = 12
 MAX_LEN = 1.3
 PEAK_DB = -6.0
 
@@ -128,15 +145,85 @@ def finish(x, max_len=MAX_LEN, oneshot=False):
     return x / (np.abs(x).max() or 1.0) * 10 ** (PEAK_DB / 20)
 
 
-def store(name, x, sdir, source, prompt=None, max_len=MAX_LEN):
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_manifest(sdir):
+    p = os.path.join(sdir, "library.json")
+    try:
+        return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+    except ValueError:
+        return {}
+
+
+def record(sdir, name, source, prompt=None, seconds=None, origin=None):
+    """Write one cue's provenance (kind + hash) into <sdir>/library.json."""
+    lib = load_manifest(sdir)
+    path = os.path.join(sdir, f"{name}.wav")
+    lib[name] = {"source": source, "prompt": prompt, "seconds": seconds,
+                 "made": datetime.date.today().isoformat(),
+                 "sha256": sha256(path) if os.path.exists(path) else None}
+    if origin:
+        lib[name]["from"] = origin
+    json.dump(lib, open(os.path.join(sdir, "library.json"), "w", encoding="utf-8"),
+              indent=1, ensure_ascii=False)
+
+
+def kind_of(source):
+    """synth / elevenlabs / user / unknown, from a manifest 'source' (old entries said
+    'imported:<file>' for a user's file)."""
+    s = (source or "").lower()
+    if s.startswith("synth"):
+        return "synth"
+    if s.startswith("elevenlabs"):
+        return "elevenlabs"
+    if s.startswith(("imported", "user")):
+        return "user"
+    return "unknown"
+
+
+def provenance(sdir, names=None, skill_sfx=None):
+    """{name: kind} for every cue wav present in sdir (default: the named LIBRARY).
+
+    No entry, or an entry whose hash no longer matches (someone replaced the file)?
+    A byte-identical copy of the skill's own cue inherits ITS kind (setup_assets.py
+    synthesises the skill's set; a project copies it in without the manifest).
+    Anything else is 'unknown' — possibly the user's, so never overwritten."""
+    skill_sfx = skill_sfx or os.path.join(hfcfg.SKILL_DIR, "assets", "sfx")
+    lib = load_manifest(sdir)
+    same = os.path.abspath(skill_sfx) == os.path.abspath(sdir)
+    slib = {} if same else load_manifest(skill_sfx)
+    out = {}
+    for n in names or list(LIBRARY):
+        p = os.path.join(sdir, f"{n}.wav")
+        if not os.path.exists(p):
+            continue
+        e = lib.get(n)
+        if e and (not e.get("sha256") or e["sha256"] == sha256(p)):
+            out[n] = kind_of(e.get("source"))
+            continue
+        sp = os.path.join(skill_sfx, f"{n}.wav")
+        if same and not e:
+            out[n] = "synth"        # the skill's own folder: setup_assets.py made it (nothing ships)
+        elif not same and os.path.exists(sp) and sha256(sp) == sha256(p):
+            se = slib.get(n)
+            # the skill's set is built by setup_assets.py: synthesised unless recorded
+            out[n] = kind_of(se.get("source")) if se else "synth"
+        else:
+            out[n] = "unknown"
+    return out
+
+
+def store(name, x, sdir, source, prompt=None, max_len=MAX_LEN, origin=None):
     path = os.path.join(sdir, f"{name}.wav")
     y = finish(x, max_len, oneshot=name in ONESHOT)
     ak.write_wav(path, y)
-    lib_p = os.path.join(sdir, "library.json")
-    lib = json.load(open(lib_p, encoding="utf-8")) if os.path.exists(lib_p) else {}
-    lib[name] = {"source": source, "prompt": prompt, "seconds": round(len(y) / SR, 3),
-                 "made": datetime.date.today().isoformat()}
-    json.dump(lib, open(lib_p, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    record(sdir, name, source, prompt, round(len(y) / SR, 3), origin)
     return path, len(y) / SR
 
 
@@ -313,36 +400,71 @@ def generate(key, name, prompt, seconds, influence, sdir):
                  max_len=max(MAX_LEN, seconds + 0.5) if seconds > MAX_LEN else MAX_LEN)
 
 
+def index_uses(names, index="index.html"):
+    """The cue names among `names` that index.html plays (its clip durations were
+    measured on the files as they were at build time)."""
+    if not os.path.exists(index):
+        return []
+    html = open(index, encoding="utf-8", errors="replace").read()
+    return [n for n in names if re.search(rf"/{re.escape(n)}\.wav[\"']", html)]
+
+
 def cmd_library(a):
     sdir = a.dir
     os.makedirs(sdir, exist_ok=True)
     names = a.names.split(",") if a.names else list(LIBRARY)
-    todo = [n for n in names if a.force or not os.path.exists(os.path.join(sdir, f"{n}.wav"))]
+    prov = provenance(sdir, names)
+    missing = [n for n in names if n not in prov]
+    stand_ins = [n for n in names if prov.get(n) == "synth"]
+    key = None if a.synth else ak.api_key()
+    # what may be (re)made: everything with --force; else the missing cues, plus the
+    # synthesised stand-ins when something better is available (a key, or user files)
+    if a.force:
+        todo = list(names)
+    else:
+        todo = missing + ([] if a.keep_synth else
+                          [n for n in stand_ins if key or any(_match(d, n) for d in a.src)])
     if not todo:
-        print(f"  library complete: {len(names)} cues in {sdir}/")
+        kinds = {k: sum(1 for v in prov.values() if v == k) for k in set(prov.values())}
+        print(f"  library complete: {len(names)} cues in {sdir}/ ("
+              + ", ".join(f"{v} {k}" for k, v in sorted(kinds.items())) + ")")
+        if stand_ins and not key and not a.synth:
+            print(f"  {len(stand_ins)} are synthesised stand-ins — with an ElevenLabs key, "
+                  f"sfx.py library upgrades them (or --from DIR with files you own)")
+        elif stand_ins and a.keep_synth:
+            print(f"  {len(stand_ins)} synthesised stand-ins kept (--keep-synth)")
         return 0
-    done = {}
+    done, upgraded = {}, []
     for n in list(todo):                        # 1. files the user owns
         f = next((m for m in (_match(d, n) for d in a.src) if m), None)
         if f:
-            p, d = store(n, ak.read_audio(f, mono=False), sdir, f"imported:{os.path.basename(f)}",
-                         max_len=4.0 if n == "logo_sting" else MAX_LEN)
+            p, d = store(n, ak.read_audio(f, mono=False), sdir, "user",
+                         max_len=4.0 if n == "logo_sting" else MAX_LEN,
+                         origin=os.path.basename(f))
             done[n] = f"imported {os.path.basename(f)} ({d:.2f}s)"
+            upgraded += [n] if n in stand_ins else []
             todo.remove(n)
-    key = None if a.synth else ak.api_key()
     if todo and key:                            # 2. ElevenLabs, credits first
-        need = int(sum(LIBRARY.get(n, ("", MAX_LEN))[1] for n in todo) * CREDITS_PER_SEC)
-        before = ak.require_credits(key, need, f"{len(todo)} sound effect(s)")
+        secs = sum(LIBRARY.get(n, ("", MAX_LEN))[1] for n in todo)
+        need = int(secs * CREDITS_PER_SEC)
+        what = (f"{len(todo)} sound effect(s)"
+                + (f", {len([n for n in todo if n in stand_ins])} of them upgrading "
+                   f"synthesised stand-ins" if any(n in stand_ins for n in todo) else ""))
+        before = ak.require_credits(key, need, what)
+        made = 0.0
         for n in list(todo):
             prompt, sec = LIBRARY.get(n, (n.replace("_", " ") + ", short, clean", MAX_LEN))
             print(f"  generating {n}…", flush=True)
             p, d = generate(key, n, prompt, sec, a.influence, sdir)
-            done[n] = f"ElevenLabs ({d:.2f}s)"
+            made += sec
+            done[n] = f"ElevenLabs ({d:.2f}s)" + ("  ← was a synth stand-in" if n in stand_ins else "")
+            upgraded += [n] if n in stand_ins else []
             todo.remove(n)
-        after, _, _ = ak.credits(key)
-        if after is not None:
-            print(f"  credits used: {before - after:,} (left {after:,})")
-    if todo:                                    # 3. synthesised fallback
+        # never "credits used: 0": the balance lags (see audiokit.spend_text)
+        ak.spend_report(key, before, int(round(made * CREDITS_PER_SEC_EST)),
+                        f"sfx: {len(done)} cue(s), {made:.1f}s requested")
+    todo = [n for n in todo if n not in prov or a.force]   # 3. synth: only what is MISSING
+    if todo:
         if not key and not a.synth:
             print("  no ElevenLabs key — synthesising the missing cues (plainer than generated "
                   "ones; import your own with --from DIR any time)")
@@ -351,8 +473,17 @@ def cmd_library(a):
             done[n] = f"synthesised ({d:.2f}s)" + ("" if n in LIBRARY else "  ! unknown name → soft pop")
     for n, how in done.items():
         print(f"  {n:14s} {how}")
-    print(f"  ✓ {len(names)} cues in {sdir}/ (48 kHz stereo, peak {PEAK_DB:.0f} dBFS) — "
-          f"provenance in {sdir}/library.json")
+    after = provenance(sdir, names)
+    kinds = {k: sum(1 for v in after.values() if v == k) for k in set(after.values())}
+    print(f"  ✓ {len(names)} cues in {sdir}/ (48 kHz stereo, peak {PEAK_DB:.0f} dBFS): "
+          + ", ".join(f"{v} {k}" for k, v in sorted(kinds.items()))
+          + f" — provenance in {sdir}/library.json")
+    if upgraded:
+        print(f"  upgraded {len(upgraded)} synthesised stand-in(s): {', '.join(upgraded)}")
+        used = index_uses(upgraded)
+        if used:
+            print(f"  ! index.html plays {', '.join(used)} with clip durations measured on the "
+                  f"OLD files — re-run the build (scenes / build_index) before the next render")
     return 0
 
 
@@ -368,9 +499,35 @@ def cmd_gen(a):
               f"  (a library name gets its shaped synth; any other name a soft pop). For a real "
               f"custom cue, import a file you own: sfx.py library --from DIR --names {name}")
         return 0
-    ak.require_credits(key, int(a.duration * CREDITS_PER_SEC), f"'{name}'")
+    before = ak.require_credits(key, int(a.duration * CREDITS_PER_SEC), f"'{name}'")
     p, d = generate(key, name, a.prompt, a.duration, a.influence, a.dir)
     print(f"  ✓ {name} ({d:.2f}s) → {p}")
+    ak.spend_report(key, before, int(round(a.duration * CREDITS_PER_SEC_EST)), f"sfx gen '{name}'")
+    return 0
+
+
+def cmd_status(a):
+    """Where every cue in the folder came from — the same check doctor.py runs."""
+    names = sorted(set(LIBRARY) | {os.path.splitext(f)[0] for f in os.listdir(a.dir)
+                                   if f.endswith(".wav")}) if os.path.isdir(a.dir) else []
+    prov = provenance(a.dir, names)
+    if not prov:
+        print(f"  no cues in {a.dir}/ — run: sfx.py library")
+        return 1
+    groups = [(k, [n for n in names if prov.get(n) == k and (k != "unknown" or n in LIBRARY)])
+              for k in ("elevenlabs", "user", "synth", "unknown")]
+    groups.append(("unrecorded", [n for n in names if prov.get(n) == "unknown" and n not in LIBRARY]))
+    for k, cues in groups:          # unrecorded = made by another script (outro_*) or by hand
+        if cues:
+            print(f"  {k:10s} {len(cues):2d}  {', '.join(cues)}")
+    miss = [n for n in LIBRARY if n not in prov]
+    if miss:
+        print(f"  missing    {len(miss):2d}  {', '.join(miss)}")
+    stand = [n for n in LIBRARY if prov.get(n) == "synth"]
+    if stand:
+        print(f"  {len(stand)} named cue(s) are synthesised stand-ins — "
+              + ("run: sfx.py library  (a key is set: it upgrades them)" if ak.api_key()
+                 else "with an ElevenLabs key, sfx.py library upgrades them"))
     return 0
 
 
@@ -497,16 +654,90 @@ def cmd_place(a):
     return 1 if bad else 0
 
 
+def _attrs(tag):
+    return dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+
+
+def cues_from_index(index="index.html"):
+    """SFX clips actually in the composition: every <audio> whose class or src says sfx.
+    WHY: scene-path cues (scenes.py / moments.py / outro.py) never pass through
+    `sfx.py place`, so build/sfx_placed.json may not exist — index.html is what was
+    rendered."""
+    if not os.path.exists(index):
+        return []
+    out = []
+    for tag in re.findall(r"<audio\b[^>]*>", open(index, encoding="utf-8", errors="replace").read()):
+        at = _attrs(tag)
+        src, cls = at.get("src", ""), at.get("class", "")
+        if "sfx" not in cls.split() and "/sfx/" not in src:
+            continue
+        try:
+            st = float(at["data-start"])
+        except (KeyError, ValueError):
+            continue
+        try:
+            du = float(at.get("data-duration") or "nan")
+        except ValueError:
+            du = float("nan")
+        if du != du:                                       # NaN: measure the file
+            du = ak.duration(src) if os.path.exists(src) else 0.5
+        out.append({"id": at.get("id") or os.path.basename(src), "src": src,
+                    "start": st, "duration": du})
+    return out
+
+
+def cues_from_scenes(path="build/scenes.json", sdir=SFX_DIR):
+    if not os.path.exists(path):
+        return []
+    try:
+        sc = json.load(open(path, encoding="utf-8")).get("sfx", [])
+    except (ValueError, AttributeError):
+        return []
+    out = []
+    for c in sc:
+        src = os.path.join(sdir, f"{c.get('name')}.wav")
+        out.append({"id": c.get("id") or c.get("name"), "src": src, "start": float(c["start"]),
+                    "duration": ak.duration(src) if os.path.exists(src) else 0.5})
+    return out
+
+
+def load_cues(placed=None, index="index.html", scenes="build/scenes.json", sdir=SFX_DIR):
+    """(cues, where) — an explicit --placed file, else index.html (what was rendered),
+    else build/sfx_placed.json, else build/scenes.json. Never raises: no list at all
+    gives ([], reason) and the check runs on the words alone."""
+    if placed:
+        if not os.path.exists(placed):
+            return [], f"{placed} not found"
+        return json.load(open(placed, encoding="utf-8")).get("entries", []), placed
+    c = cues_from_index(index)
+    if c:
+        return c, f"{index} audio clips"
+    if os.path.exists("build/sfx_placed.json"):
+        return (json.load(open("build/sfx_placed.json", encoding="utf-8")).get("entries", []),
+                "build/sfx_placed.json")
+    c = cues_from_scenes(scenes, sdir)
+    if c:
+        return c, scenes
+    return [], f"no SFX list ({index}, build/sfx_placed.json, {scenes})"
+
+
 def cmd_check(a):
     """Intelligibility (§10.6): diff the master's re-transcription against the source words
     and name the cue sitting on every changed word. Halving a cue that could not move is
     the rule, and sometimes it is not enough ("וגרוק" was heard as "ודרוק" under a
     halved pop) — this is where that shows up."""
     import difflib
+
     def n(w):
         return re.sub(r"[^\w]", "", w)
+    for f in (a.heard, a.words):
+        if not os.path.exists(f):
+            print(f"  ✗ {f} not found — re-transcribe the master first: transcribe.py "
+                  f"renders/final.mp4 --words {a.heard}")
+            return 2
     src, heard = ak.load_words(a.words), ak.load_words(a.heard)
-    placed = json.load(open(a.placed, encoding="utf-8")).get("entries", [])
+    placed, where = load_cues(a.placed, sdir=a.dir)
+    print(f"  SFX cues: {len(placed)} from {where}")
     A, B = [n(w[2]) for w in src], [n(w[2]) for w in heard]
     sm = difflib.SequenceMatcher(None, A, B, autojunk=False)
     match = sum(b.size for b in sm.get_matching_blocks()) / max(1, len(A))
@@ -527,6 +758,61 @@ def cmd_check(a):
     return 0 if match >= 0.97 else 1
 
 
+def selftest():
+    """Negative tests — `sfx.py selftest`. Temp folders, no credits. Exit 1 on failure."""
+    import shutil
+    import tempfile
+    fails = []
+    tmp = tempfile.mkdtemp(prefix="sfx_selftest_")
+    cwd = os.getcwd()
+    try:
+        skill, proj = os.path.join(tmp, "skill"), os.path.join(tmp, "proj", "assets", "sfx")
+        os.makedirs(skill)
+        os.makedirs(proj)
+        for nm in ("pop", "click", "ding"):
+            store(nm, synth(nm), skill, "synth")
+        store("bars", synth("bars"), skill, "elevenlabs", "bars prompt")
+        # a project copies the skill's files WITHOUT the manifest (the real failure)
+        for nm in ("pop", "click", "bars"):
+            shutil.copy2(os.path.join(skill, f"{nm}.wav"), proj)
+        ak.write_wav(os.path.join(proj, "ding.wav"), synth("click"))   # someone's own file
+        pv = provenance(proj, ["pop", "click", "bars", "ding", "snap"], skill_sfx=skill)
+        want = {"pop": "synth", "click": "synth", "bars": "elevenlabs", "ding": "unknown"}
+        if pv != want:
+            fails.append(f"provenance of copied cues: {pv} != {want}")
+        # a recorded cue whose file was later replaced by hand is no longer 'synth'
+        store("snap", synth("snap"), proj, "synth")
+        ak.write_wav(os.path.join(proj, "snap.wav"), synth("pop"))
+        if provenance(proj, ["snap"], skill_sfx=skill).get("snap") != "unknown":
+            fails.append("a hand-replaced file must read 'unknown' (never overwritten)")
+        if kind_of("imported:bars_2.wav") != "user" or kind_of("synth") != "synth":
+            fails.append("kind_of: old 'imported:' entries must read as the user's")
+        # check: cues come from index.html when build/sfx_placed.json is absent
+        os.chdir(os.path.join(tmp, "proj"))
+        open("index.html", "w").write(
+            '<audio id="a1" class="clip sfx" data-start="1.5" data-duration="0.3" '
+            'src="assets/sfx/pop.wav" data-volume="0.1">'
+            '<audio id="bgm" class="clip music" data-start="0" data-duration="9" '
+            'src="assets/bgm/bed.wav">'
+            '<audio data-start="4.0" src="assets/sfx/click.wav" class="clip">')
+        cues, where = load_cues()
+        if [c["id"] for c in cues] != ["a1", "click.wav"] or "index.html" not in where:
+            fails.append(f"index.html cues: {cues} from {where}")
+        os.remove("index.html")
+        cues, where = load_cues()
+        if cues or "no SFX list" not in where:
+            fails.append(f"no cue source must give ([], reason), got {cues}, {where}")
+        if index_uses(["pop"], "nope.html") != []:
+            fails.append("index_uses on a missing index.html must be []")
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+    for f in fails:
+        print("  ✗ " + f)
+    print(f"  sfx selftest: {'all passed' if not fails else f'{len(fails)} failed'}")
+    return 1 if fails else 0
+
+
 def main():
     ap = hfcfg.arg_parser(__doc__)
     ap.add_argument("--dir", default=SFX_DIR)
@@ -535,6 +821,8 @@ def main():
     lib.add_argument("--from", dest="src", action="append", default=[],
                      help="import matching files you own from this folder (repeatable)")
     lib.add_argument("--synth", action="store_true", help="never call ElevenLabs; synthesise")
+    lib.add_argument("--keep-synth", action="store_true",
+                     help="with a key: only fill MISSING cues, keep synthesised stand-ins")
     lib.add_argument("--names", help="comma list (default: the whole set)")
     lib.add_argument("--force", action="store_true")
     lib.add_argument("--influence", type=float, default=0.6)
@@ -553,13 +841,18 @@ def main():
     c = sub.add_parser("check", help="re-transcription diff → the cue on each changed word")
     c.add_argument("heard", help="words json of the re-transcribed master (transcribe.py --words)")
     c.add_argument("--words", default="src/words.json")
-    c.add_argument("--placed", default="build/sfx_placed.json")
+    c.add_argument("--placed", help="a cue list (sfx_placed.json format); default: "
+                   "index.html's sfx clips → build/sfx_placed.json → build/scenes.json")
+    sub.add_parser("status", help="where every cue came from (synth / elevenlabs / user)")
+    if sys.argv[1:2] == ["selftest"]:
+        hfcfg.ensure_deps(["numpy"])
+        return selftest()
     a = ap.parse_args()
     hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
     hfcfg.ensure_deps(["numpy"])
     return {"library": cmd_library, "gen": cmd_gen, "place": cmd_place,
-            "check": cmd_check}[a.cmd](a)
+            "check": cmd_check, "status": cmd_status}[a.cmd](a)
 
 
 if __name__ == "__main__":

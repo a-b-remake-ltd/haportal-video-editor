@@ -40,6 +40,21 @@ WHY each rule (each one is a bug that shipped once):
   capped at ×6.0. Against the RAW voice, so a quiet AI-avatar voice gets a quiet bed and
   the master lifts both together.
 * Targets 12-16 dB (house: 14; 13 where the story lifts/peaks). Lower = louder music.
+* NEVER silence at the end. A from-zero test shipped a reel whose music audibly ended
+  1.1 s before the last frame, so the outro lift had nothing to lift. When the trimmed
+  track's audible end (last 50 ms frame within 20 dB of its median) is more than 0.25 s
+  before END, the track is extended with a natural tail (`extend_tail`, auto):
+    loop   — the stretch BEFORE the track's ending (its final hit / ring, where the level
+             first falls 6 dB under the median) is lengthened by repeating its last bar
+             (4 beats, measured by autocorrelation; 2 s if no pulse) with equal-power
+             crossfades, then the track's OWN ending plays, landing just after END;
+    reverb — the fallback with no steady bar to loop: a synthetic hall wash of the last
+             1.5 s, faded in as the dry chord dies away, 6 dB under the median level,
+             RT60 = max(4 s, 3 × the span) so it is ≈ −20 dB at END.
+  It is printed and written to build/bed_report.json ("tail"). `"extend_tail": false`
+  in bed.json turns it off (then the gap is padded with silence and flagged ✗).
+
+    python3 scripts/bed.py selftest        # negative tests of the tail extension
 """
 import json
 import os
@@ -58,9 +73,119 @@ DEFAULTS = {"music": "assets/bgm/music.mp3", "offset": None, "voice": None, "end
             "gain_cap": 6.0, "start_gain": 0.25, "eq": [[1800, -5, 1], [450, -3, 1]],
             "sidechain": {"key_db": -6, "threshold": 0.03, "ratio": 3, "attack": 15,
                           "release": 260},
-            "end_fade": 0.3}
+            "end_fade": 0.3, "extend_tail": "auto"}
 HOUSE_GAP = 14.0
 LIFT_GAP = 13.0
+TAIL_SLACK = 0.25          # an audible end this close to END needs no extension
+BAR = 2.0                  # loop length when no beat can be measured (1 bar at 120 bpm)
+XFADE = 0.25
+
+
+def audible_end(x, hop=0.05, below=20.0):
+    """Seconds: the end of the last 50 ms frame within `below` dB of the track's median
+    level (non-silent frames). Same rule as music.py's natural end, finer grain."""
+    import numpy as np
+    m = x.mean(1) if x.ndim == 2 else x
+    e = ak.rms_frames(m, SR, hop)
+    loud = e[e > -60]
+    if not loud.size:
+        return 0.0
+    alive = np.nonzero(e > float(np.median(loud)) - below)[0]
+    return float((alive[-1] + 1) * hop) if alive.size else 0.0
+
+
+def bar_length(x, b):
+    """Seconds of one 4-beat bar, from the pulse of the 8 s before sample `b`
+    (autocorrelation of the log-energy onset envelope). A loop one bar long repeats in
+    phase; a fixed 2 s loop on a 90 bpm groove stumbles on every repeat. The strongest
+    pulse (often hats, 8ths or 16ths) is doubled into the 0.4-0.8 s beat range, × 4.
+    Falls back to BAR when there is no clear pulse."""
+    import numpy as np
+    m = x[max(0, b - int(8 * SR)):b]
+    m = m.mean(1) if m.ndim == 2 else m
+    if len(m) < 4 * SR:
+        return BAR
+    on = np.maximum(0, np.diff(ak.rms_frames(m, SR, 0.01)))
+    on = on - on.mean()
+    ac = np.correlate(on, on, "full")[len(on) - 1:]
+    if ac[0] <= 0:
+        return BAR
+    k = 20 + int(np.argmax(ac[20:100]))             # pulse lag in 0.2-1.0 s
+    if ac[k] / ac[0] < 0.12:
+        return BAR
+    beat = k * 0.01
+    while beat < 0.4:
+        beat *= 2
+    return round(4 * beat, 3)
+
+
+def extend_tail(x, end, mode="auto"):
+    """x (n, 2) trimmed track → (exactly END long, info or None). See the docstring:
+    a track that audibly ends before END gets a natural tail instead of silence.
+
+    loop:   the stretch before the track's ending (where the level first falls 6 dB
+            under its median, i.e. the final hit / ring) is extended by repeating its
+            last bar with equal-power crossfades, then the track's OWN ending plays —
+            so the real final hit and ring land just after END, not in mid-outro.
+    reverb: a synthetic hall wash of the last 1.5 s, faded in as the dry chord fades
+            out; the fallback when there is no steady bar to loop."""
+    import numpy as np
+    n = int(round(end * SR))
+
+    def fit(y):
+        return y[:n] if len(y) >= n else np.pad(y, ((0, n - len(y)), (0, 0)))
+    ae = min(audible_end(x), len(x) / SR)
+    if ae >= end - TAIL_SLACK:
+        return fit(x), None
+    gap = end - ae
+    info = {"audible_end": round(ae, 2), "gap": round(gap, 2), "seconds_added": round(gap, 2)}
+    if not mode:
+        return fit(x), dict(info, mode="none")
+    hop = 0.05
+    m = x[:int(ae * SR)].mean(1)
+    e = ak.rms_frames(m, SR, hop)
+    med = float(np.median(e[e > -60])) if (e > -60).any() else -60.0
+    full = np.nonzero(e > med - 6)[0]
+    b0 = int((full[-1] + 1) * hop * SR) if full.size else int(ae * SR)   # the ending starts
+    bar = bar_length(x, b0)
+    if mode in ("auto", "loop") and b0 >= int((bar + 0.5) * SR):
+        seg = x[b0 - int(bar * SR):b0].astype(np.float64)
+        ending = x[b0:].astype(np.float64)
+        xf = int(min(XFADE, bar / 4) * SR)
+        up = np.sqrt(np.linspace(0, 1, xf))[:, None]
+        down = np.sqrt(np.linspace(1, 0, xf))[:, None]
+        # the ending should start where its audible end lands 0.3 s after END
+        target = n - int(round((ae - b0 / SR) * SR)) + int(0.3 * SR)
+        y, reps = x[:b0].astype(np.float64), 0
+        while len(y) < target:
+            y = np.concatenate([y[:-xf], y[-xf:] * down + seg[:xf] * up, seg[xf:]])
+            reps += 1
+        y = y[:max(b0, target)]
+        if len(ending) > xf:              # a cut-off track has no ending left to play
+            y = np.concatenate([y[:-xf], y[-xf:] * down + ending[:xf] * up, ending[xf:]])
+        return fit(y), dict(info, mode="loop", bar=bar, repeats=reps,
+                            ending_kept=round(ae - b0 / SR, 2))
+    # reverb: the wash fades in from the start of the ending as the dry chord dies away
+    b = int(ae * SR)
+    rng = np.random.default_rng(11)
+    span = (n - b0) / SR
+    rt60 = max(4.0, 3.0 * span)                 # ≈ −20 dB at END: still under the logo
+    L = int(min(rt60, span + 1.0) * SR)
+    t = np.arange(L) / SR
+    ir = rng.standard_normal((L, 2)) * np.exp(-6.9 * t / rt60)[:, None]
+    for _ in range(3):                                                  # darker wash
+        ir = (ir + np.roll(ir, 1, 0)) / 2
+    src = x[max(0, b0 - int(1.5 * SR)):max(b0, b)].astype(np.float64)
+    M = len(src) + L
+    F = 1 << (M - 1).bit_length()
+    wet = np.fft.irfft(np.fft.rfft(src, F, axis=0) * np.fft.rfft(ir, F, axis=0), F, axis=0)[:M]
+    wet = wet[len(src) - (max(b0, b) - b0):]        # aligned so wet[0] sits at b0
+    wet *= 10 ** ((med - 6.0 - ak.db(wet[:int(0.5 * SR)])) / 20)
+    y = fit(x).astype(np.float64)
+    w = wet[:n - b0]
+    ramp = np.minimum(1.0, np.arange(len(w)) / (0.5 * SR))[:, None]
+    y[b0:b0 + len(w)] += w * ramp
+    return y, dict(info, mode="reverb", rt60=round(rt60, 1))
 
 
 def load_report():
@@ -182,15 +307,20 @@ def main():
         print(f"  ! the last section ends at {SEC[-1][2]:.2f}s, after the outro start "
               f"{O:.2f}s — the outro lift starts at the outro")
 
-    # 1. trim by offset, cut to END, 12 ms fade-in
+    # 1. trim by offset, extend an early ending with a natural tail, cut to END, fade in
     x = ak.read_audio(cfg["music"], mono=False, start=OFF)
     n = int(round(END * SR))
-    have = len(x) / SR
-    if len(x) < n:
-        print(f"  ! the track (after the {OFF:.2f}s trim) ends at {have:.2f}s — "
-              f"{END - have:.2f}s of silence padded to END {END:.2f}s")
-        x = np.pad(x, ((0, n - len(x)), (0, 0)))
-    x = x[:n].astype(np.float64)
+    x, tail = extend_tail(x, END, cfg.get("extend_tail", "auto"))
+    if tail and tail["mode"] != "none":
+        how = (f"{tail['repeats']} crossfaded repeat(s) of its last {tail['bar']:.2f}s bar, "
+               f"then its own {tail['ending_kept']:.2f}s ending" if tail["mode"] == "loop"
+               else f"a reverb wash of the final chord (RT60 {tail['rt60']}s)")
+        print(f"  ↳ the music audibly ended at {tail['audible_end']:.2f}s, {tail['gap']:.2f}s "
+              f"before END — extended to END with {how}")
+    elif tail:
+        print(f"  ✗ the music audibly ends at {tail['audible_end']:.2f}s, {tail['gap']:.2f}s "
+              f"before END, and extend_tail is off — the end is padded with SILENCE")
+    x = x.astype(np.float64)
     f = int(0.012 * SR)
     x[:f] *= np.linspace(0, 1, f)[:, None]
     if O is None and cfg.get("end_fade"):
@@ -250,10 +380,18 @@ def main():
                   "pick a variant with a smaller offset — the logo should not land in silence")
     print(f"  peak {20 * np.log10(pk + 1e-9):.1f} dBFS"
           f"{'   ← near clipping: lower the targets gap or start_gain' if pk > 0.97 else ''}")
+    # GATE: the bed must still sound just before the last frame (the outro lift is at
+    # ×0.6 there; with no outro the 0.3 s end fade starts after this window)
+    w0, w1 = (END - 1.0, END - 0.5) if O is not None else (END - 0.8, END - 0.3)
+    end_db, body_db = ak.db(d[int(max(0, w0) * SR):int(w1 * SR)]), ak.db(d[:int(w0 * SR)])
+    silent_end = end_db < body_db - 30
+    print(f"  end        {w0:6.2f}-{w1:6.2f}s  bed {end_db:.1f} dBFS RMS (body {body_db:.1f})"
+          + ("   ✗ SILENT before the last frame" if silent_end else "   ✓ music to the end"))
     entry = {"id": "bgm", "src": a.out, "start": 0, "duration": round(END, 3),
              "volume": 1.0, "baked": True}
     json.dump({"offset": OFF, "end": END, "outro": O, "sections": rows,
-               "drops": drops, "peak": round(pk, 4), "media_entry": entry},
+               "drops": drops, "peak": round(pk, 4), "tail": tail,
+               "end_db": round(end_db, 1), "silent_end": silent_end, "media_entry": entry},
               open("build/bed_report.json", "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     print("\n  media.json → audio.music:\n  " + json.dumps([entry], ensure_ascii=False))
     print("  (\"baked\": the level and the outro lift are inside the file — play it at 1.0 "
@@ -266,8 +404,55 @@ def main():
         m["audio"]["music"] = [entry]
         json.dump(m, open("media.json", "w", encoding="utf-8"), indent=1, ensure_ascii=False)
         print(f"  ✓ media.json audio.music set (replaced {len(old)} entr{'y' if len(old) == 1 else 'ies'})")
-    return 0
+    return 1 if silent_end else 0
+
+
+def selftest():
+    """Negative tests of the tail extension — `bed.py selftest`. Synthetic buffers, no
+    files, no credits. Exit 1 on failure."""
+    import numpy as np
+    fails = []
+    t = np.arange(int(20 * SR)) / SR
+    tone = (np.sin(2 * np.pi * 220 * t) * 0.3)[:, None] * np.ones((1, 2))
+
+    def level(y, a, b):
+        return ak.db(y[int(a * SR):int(b * SR)])
+    # 1. a steady track physically 1.5 s too short → loop, still at full level near END
+    y, info = extend_tail(tone[:int(18.5 * SR)], 20.0)
+    if not info or info["mode"] != "loop" or len(y) != int(20 * SR):
+        fails.append(f"steady short track: expected a loop to 20 s, got {info}, {len(y) / SR:.2f}s")
+    elif abs(level(y, 19.0, 19.9) - level(tone, 10, 12)) > 3:
+        fails.append("steady short track: the looped tail is not at the track's level")
+    # 2. a track that rings out 3.4 s before END → loop the body, keep its OWN ending
+    #    (the ring), which now lands at END: full level just before it
+    env = np.ones(len(t))
+    env[int(16 * SR):] = np.exp(-(t[int(16 * SR):] - 16) * 4)
+    ringing = tone * env[:, None]
+    y, info = extend_tail(ringing, 20.0)
+    if not info or info["mode"] != "loop" or not info.get("ending_kept", 0) > 0.2:
+        fails.append(f"ringing track: expected loop + its own ending, got {info}")
+    elif abs(level(y, 19.0, 19.5) - level(tone, 10, 12)) > 3:
+        fails.append(f"ringing track: not at full level before END ({level(y, 19.0, 19.5):.1f})")
+    # 3. reverb (forced): still audible (> −45 dBFS) just before END
+    y, info = extend_tail(ringing, 20.0, mode="reverb")
+    if not info or info["mode"] != "reverb" or level(y, 19.5, 19.8) < -45:
+        fails.append(f"reverb tail: silent at the end or wrong mode ({info})")
+    # 4. a track that plays to END needs nothing and is returned at exactly END
+    y, info = extend_tail(tone, 19.0)
+    if info is not None or len(y) != int(19 * SR):
+        fails.append(f"long-enough track: should be untouched, got {info}")
+    # 5. extend_tail off → padded with silence, and SAID so (mode none)
+    y, info = extend_tail(tone[:int(18 * SR)], 20.0, mode=False)
+    if not info or info["mode"] != "none" or level(y, 19.0, 19.9) > -100:
+        fails.append(f"extend_tail off: expected silence + mode none, got {info}")
+    for f in fails:
+        print("  ✗ " + f)
+    print(f"  bed selftest: {5 - len(fails)}/5 passed")
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["selftest"]:
+        hfcfg.ensure_deps(["numpy"])
+        sys.exit(selftest())
     sys.exit(main())

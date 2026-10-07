@@ -8,28 +8,50 @@ story's turn.  references/sound.md §Music.
     python3 scripts/music.py --file my_licensed_track.mp3           # no key: analyse + align a track
     python3 scripts/music.py --procedural                           # no key, no track: quiet synth bed
     python3 scripts/music.py --reanalyse                            # re-pick from existing variants
+    python3 scripts/music.py --force --stronger-turn                # ONE retry after a weak turn
+    python3 scripts/music.py --credits                              # measured spend, once it settled
+    python3 scripts/music.py selftest                               # negative tests (no credits)
 
 Outputs  assets/bgm/music.mp3 (the chosen track, UNTRIMMED) and assets/bgm/music_report.json
-(offset, drop, natural ending, the analysis of every variant). bed.py reads the offset from
-the report — the trim is applied there, once.
+(offset, drop, natural ending, the turn gate, the analysis of every variant). bed.py reads
+the offset from the report — the trim is applied there, once.
 
 WHY each step:
 * Music is generated per video from a composition_plan whose sections follow the story,
   so the track's own structure (tension → hit → lift → peak → resolve) happens where the
   story does. A stock bed never turns where the speaker turns.
+* The TURN is built into the plan, not hoped for: a from-zero test got a track whose
+  only real drop sat 16 s before the turn, because the section styles described moods,
+  not structure. composition() now adds concrete musical instructions around the turn —
+  the section BEFORE it is sparse and filtered and ends on a sudden stop, the turn
+  section "begins with a sudden full drop on the very first beat" — and names both
+  sections for what they are. "EDM drop" is no longer a global negative (it told the
+  model to avoid the one thing the plan needs); the cheesy genre is excluded by name.
 * TWO variants with contrasting global styles, requested SEQUENTIALLY (parallel requests
   return HTTP 429). The model does not put a drop exactly on a section boundary; having
   two to choose from is what makes landing it on the turn word reliable.
 * Credits are checked BEFORE the first request; the run stops with a clear message
-  instead of failing halfway through.
-* Analysis: RMS per 0.5 s (to see the structure), the main drop at 20 ms resolution
-  (the biggest energy rise, refined to its onset), and rejection of tracks with a silent
-  intro or a dead gap — generated music often opens on silence.
+  instead of failing halfway through. AFTER it, the spend is reported as an ESTIMATE from
+  the generated length: the balance endpoint lags minutes, and reading it straight away
+  printed "credits used: 0" while ~1,700 had gone. `--credits` reads the measured change
+  later (build/credits_ledger.json).
+* Analysis: RMS per 0.5 s (to see the structure); candidate changes at 20 ms; each one
+  scored by its MAGNITUDE (2 s after vs 2 s before), its CONTRAST (a real drop follows a
+  quieter / sparser stretch, a rise inside a plateau does not) and its suddenness. In the
+  same test the old detector called a +4.5 dB rise in the middle of a plateau "the drop"
+  while the real +13.8 dB lift sat elsewhere — now the report names the strongest change
+  and where it would land.
+* TURN GATE: the change that lands on the turn must lift ≥ 6 dB. Below that the run says
+  so loudly, exits 3, and suggests ONE regeneration with --stronger-turn. It never loops
+  on its own: every round costs credits.
 * offset = dropTime − (turnWordStart − 0.06): the track is trimmed by `offset` so the drop
   hits 60 ms before the turn word — the ear hears the hit, then the word.
 * The first plan section is `lead` (0.5 s) longer than the story section, so the drop
   is asked for slightly AFTER the turn and the offset comes out positive (you can trim a
   track's start, you cannot un-trim it).
+* LENGTH: a ring-out section of ≥ 3.5 s is requested after END, so even after a late
+  drop's trim the track keeps sounding ≥ 2 s past the last frame (a track that ran out
+  1 s early left the logo in silence). bed.py still extends an early ending, and says so.
 * No ElevenLabs key: `--file` takes a track the user is licensed to use and runs the same
   analysis + alignment; `--procedural` synthesises a quiet, royalty-free bed with a hit on
   the turn; or score nothing (bed.py is simply not run). The script says which.
@@ -49,9 +71,14 @@ PLAN = "music_plan.json"
 BGM = "assets/bgm"
 REPORT = os.path.join(BGM, "music_report.json")
 MUSIC_URL = "/v1/music?output_format=mp3_44100_192"
-# Measured: ~830 credits per generated minute (2 × 55 s = 1,512). Estimate high so the
-# credit check never lets a batch start that it cannot finish.
+# Measured: 2 × 55 s = 1,512 and 2 × 62.9 s ≈ 1,714 credits, i.e. ~820 per generated
+# minute. The GATE estimates high so a batch never starts that it cannot finish; the
+# REPORT uses the measured rate so the number it prints is the real cost.
 CREDITS_PER_MIN = 1000
+CREDITS_PER_MIN_EST = 820
+TURN_MIN_DB = 6.0          # the change landing on the turn must lift at least this much
+TAIL_MIN = 3.5             # ring-out requested past END (late drop ≤ lead+1.5 s, + 2 s spare)
+MAX_OFFSET_GEN = 8.0       # largest trim for a generated track (see the analyse loop)
 
 # Two contrasting global styles are the default pair; "tech" is a third, darker option.
 # Every preset keeps "leaves space for a spoken voice" and "starts immediately": the bed
@@ -67,21 +94,53 @@ PRESETS = {
              "minimal clean percussion", "sleek premium tech commercial", "dark and confident",
              "leaves space for a spoken voice", "starts immediately"],
 }
-NEGATIVE = ["vocals", "singing", "lyrics", "choir", "rap", "vocal chops", "cheesy", "EDM drop",
-            "aggressive distortion", "long silence", "fade in from silence"]
+# NOT "EDM drop": as a global negative it told the model to avoid the very drop the plan
+# asks for on the turn. The cheesy genre is excluded by name instead.
+NEGATIVE = ["vocals", "singing", "lyrics", "choir", "rap", "vocal chops", "cheesy",
+            "festival EDM", "dubstep wobble", "aggressive distortion", "long silence",
+            "fade in from silence"]
 
 # The emotional arc of a motivational / call-to-action monologue. --init maps it onto
 # the real timeline (turn word, end of speech, outro); the editor then rewrites the
-# styles for THIS story.
+# styles for THIS story. The STRUCTURE around the turn (filtered build → stop → full
+# drop) is added by composition() whatever the styles say — see TURN_BUILD / TURN_DROP.
 ARC = {
-    "hook": ["immediate energy from the first second, tense and restrained, sparse pulse"],
-    "tension": ["tension builds, darker, ends with a short hit"],
-    "turn": ["hope enters, warm pads, gentle rise"],
+    "hook": ["starts on the first beat, light pulse and a muted plucked motif, sparse"],
+    "tension": ["restrained, tension grows slowly, darker"],
+    "turn": ["hope and confidence, warm piano chords over the full beat"],
     "drive": ["driving and uplifting, steady momentum, full groove"],
     "peak": ["emotional peak, big and free, soaring"],
-    "outro": ["resolves into one final deep hit and a ringing tail"],
+    "outro": ["one final deep hit, then the last chord rings"],
 }
 MIN_SECTION = 3.0          # ElevenLabs rejects composition-plan sections under 3 s
+
+# Concrete musical instructions for the two sections around the turn, by strength
+# (1 = default, 2 = --stronger-turn, the one retry after a weak turn). Moods ("hope
+# enters") gave the model nothing to place; instruments, filters and a stop do.
+TURN_BUILD = {
+    1: (["sparse and filtered: low-pass filtered drums, no kick drum, no sub bass",
+         "builds tension towards the end of this section",
+         "ends with a sudden stop: a hard cut to near silence in its last half second"],
+        ["full drums", "kick drum", "drop", "climax", "long silence"]),
+    2: (["very minimal and quiet: only a filtered pad and a soft ticking pulse, no drums at all",
+         "a rising filter sweep towards the end",
+         "ends with a hard stop: half a second of complete silence before the next section"],
+        ["drums", "kick drum", "sub bass", "drop", "climax", "full band", "long silence"]),
+}
+TURN_DROP = {
+    1: (["begins with a sudden full drop on the very first beat: kick drum, 808 sub bass "
+         "and the full beat enter all at once",
+         "loud and full from its first second"],
+        ["gradual build", "slow fade in", "soft intro", "riser", "quiet start", "silence"]),
+    2: (["THE DROP: the hardest-hitting, loudest moment of the whole track lands on the "
+         "very first beat of this section",
+         "kick drum, 808 sub bass, full drums and chords all hit together at once, no lead-in"],
+        ["gradual build", "build-up", "slow fade in", "soft intro", "riser", "filtered",
+         "quiet start", "silence"]),
+}
+RING_OUT = (["the final chord keeps ringing: sustained, a slow natural decay, no new elements"],
+            ["abrupt ending", "sudden silence", "new melody"])
+KEEP_GOING = "the music keeps sounding to the very end of this section, no early fade-out"
 
 
 # ------------------------------------------------------------------ timeline context
@@ -161,12 +220,16 @@ def default_plan(words, speech_end, outro_start, end, turn, turn_label):
         "_comment": "Sections follow the STORY in video time (each starts where the previous "
                     "ends). Rewrite the styles for this video's emotional arc. variants = "
                     "preset names (" + ", ".join(PRESETS) + ") or {\"name\", \"styles\"}. "
-                    "gap_db = music under voice for bed.py (null = house default).",
+                    "gap_db = music under voice for bed.py (null = house default). "
+                    "turn_structure adds the filtered build + stop before the turn and the "
+                    "full drop on its first beat (keep it true); turn_strength 2 = the "
+                    "emphatic version (--stronger-turn). tail = ring-out past END (≥ 3.5).",
         "variants": ["trap", "score"],
         "extra_global_styles": [],
         "negative_global_styles": NEGATIVE,
         "turn_word": None, "turn_time": T if turn else None, "turn_label": turn_label,
-        "lead": 0.5, "tail": 2.0,
+        "turn_structure": True, "turn_strength": 1,
+        "lead": 0.5, "tail": TAIL_MIN,
         "outro_start": outro_start, "end": end,
         "sections": out,
     }
@@ -182,28 +245,78 @@ def section_bounds(plan):
     return out
 
 
-def composition(plan, styles):
-    """The ElevenLabs composition_plan for one variant."""
+def turn_index(plan):
+    """Index of the section that STARTS on the turn (the drop section), or None. Found by
+    time, so a plan whose sections were renamed still gets its structure."""
+    t = plan.get("turn_time")
+    if t is None:
+        return None
+    for i, (_, a, _) in enumerate(section_bounds(plan)):
+        if i > 0 and abs(a - float(t)) < 0.6:
+            return i
+    return None
+
+
+def _merge(first, rest):
+    """first + rest without duplicates (case-insensitive), order kept."""
+    out, seen = [], set()
+    for s in list(first) + list(rest):
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            out.append(s)
+    return out
+
+
+def composition(plan, styles, strength=None):
+    """The ElevenLabs composition_plan for one variant.
+
+    The editor's section styles carry the MOOD; this adds the STRUCTURE the alignment
+    depends on: the section before the turn is sparse/filtered and ends on a stop, the
+    turn section opens on a full drop (TURN_BUILD / TURN_DROP), the last story section
+    keeps going to the end, and a ring-out section of ≥ TAIL_MIN s follows END."""
     lead = float(plan.get("lead", 0.5))
-    # `tail`: extra seconds on the LAST section. The chosen drop may need an offset of up
-    # to ~3 s; without spare length the trimmed track would run out under the outro.
-    tail = float(plan.get("tail", 2.0))
+    # Ring-out past END: the chosen drop may need an offset up to ~lead + 1.5 s, and a
+    # track that decays before the last frame leaves the logo in silence. A separate
+    # section puts the decay AFTER END instead of inside the outro.
+    tail = max(float(plan.get("tail", TAIL_MIN)), TAIL_MIN)
+    strength = int(strength or plan.get("turn_strength") or 1)
+    strength = 2 if strength >= 2 else 1
+    ti = turn_index(plan) if plan.get("turn_structure", True) else None
     bounds = section_bounds(plan)
     n_last = len(bounds) - 1
     secs = []
     for i, (name, a, b) in enumerate(bounds):
-        d = b - a + (lead if i == 0 else 0) + (tail if i == n_last else 0)
+        d = b - a + (lead if i == 0 else 0)
         if d < MIN_SECTION:
             sys.exit(f"section '{name}' is {d:.1f}s — ElevenLabs needs ≥ {MIN_SECTION:.0f}s; "
                      f"merge it into a neighbour in {PLAN}")
         src = plan["sections"][i]
-        secs.append({"section_name": name.title(), "duration_ms": int(round(d * 1000)),
-                     "positive_local_styles": src.get("styles") or ["steady"],
-                     "negative_local_styles": src.get("negative") or ["silence"],
-                     "lines": []})
-    return {"positive_global_styles": styles + list(plan.get("extra_global_styles") or []),
-            "negative_global_styles": plan.get("negative_global_styles") or NEGATIVE,
-            "sections": secs}
+        pos = list(src.get("styles") or ["steady"])
+        neg = list(src.get("negative") or ["silence"])
+        title = name.title()
+        if ti is not None and i == ti - 1:
+            p2, n2 = TURN_BUILD[strength]
+            pos, title = _merge(pos, p2), f"{title} - filtered build, ends on a stop"
+            neg = _merge([x for x in neg if x.lower() != "silence"], n2)
+        elif ti is not None and i == ti:
+            p2, n2 = TURN_DROP[strength]
+            pos, title = _merge(p2, pos), f"{title} - DROP on the first beat"
+            neg = _merge(neg, n2)
+        if i == n_last:
+            pos = _merge(pos, [KEEP_GOING])
+        secs.append({"section_name": title[:100], "duration_ms": int(round(d * 1000)),
+                     "positive_local_styles": pos, "negative_local_styles": neg, "lines": []})
+    secs.append({"section_name": "Ring out", "duration_ms": int(round(tail * 1000)),
+                 "positive_local_styles": list(RING_OUT[0]),
+                 "negative_local_styles": list(RING_OUT[1]), "lines": []})
+    gneg = [x for x in (plan.get("negative_global_styles") or NEGATIVE)
+            if x.strip().lower() != "edm drop"]           # see NEGATIVE: it vetoes the drop
+    return {"positive_global_styles": _merge(styles, plan.get("extra_global_styles") or []),
+            "negative_global_styles": gneg, "sections": secs}
+
+
+def plan_seconds(comp):
+    return sum(s["duration_ms"] for s in comp["sections"]) / 1000.0
 
 
 def variant_list(plan, cli):
@@ -224,9 +337,16 @@ def variant_list(plan, cli):
 def analyse(path, verbose=True):
     """Structure, drops and defects of one track.
 
-    drops = candidate structural changes, each {t, rise_db}: the 20 ms frame where the
-    energy over the next 1.5 s most exceeds the previous 1.5 s, refined to the sharpest
-    short-scale jump within ±0.4 s (the actual hit). Separated by ≥ 3 s."""
+    drops = candidate structural changes: rises (the 20 ms frames where the next 1.5 s
+    most exceed the previous 1.5 s, ≥ 3 s apart) and breaks (a short stop and the return
+    after it), each refined to the sharpest 60 ms jump nearby (the actual hit). Every
+    candidate is then SCORED, because "the biggest local rise" is not "the drop":
+      lift_db   = level of the 2 s after − the 2 s before        (magnitude)
+      pre_db    = the 2 s before, relative to the body's level   (contrast: a real drop
+                  follows a quieter / sparser stretch; a rise inside a plateau doesn't)
+      jump_db   = the 60 ms step at the hit                      (suddenness)
+      strength  = lift + 0.5 × min(12, max(0, −pre)) + 0.2 × min(15, jump)
+    `strongest` is the best change in the whole track, wherever it sits."""
     import numpy as np
     x = ak.read_audio(path)
     sr = ak.SR
@@ -272,12 +392,14 @@ def analyse(path, verbose=True):
     picks = []
     for k in order:
         t = idx[k] * hop
-        if rise[k] < 2.0 or len(picks) >= 6:
+        if rise[k] < 2.0 or len(picks) >= 8:
             break
         if t < intro + 1.0 or any(abs(t - q["t"]) < 3.0 for q in picks):
             continue
-        # refine to the sharpest 60 ms jump within ±0.4 s
-        lo, hi = max(3, int((t - 0.4) / hop)), min(len(e) - 4, int((t + 0.4) / hop))
+        # refine to the sharpest 60 ms jump in [t − 0.5, t + 1.0]. Asymmetric on purpose:
+        # under a riser the 1.5 s window peaks BEFORE the hit (a real drop measured at
+        # 30.02 s was refined to a riser step at 29.32 s with a ±0.4 s window).
+        lo, hi = max(3, int((t - 0.5) / hop)), min(len(e) - 4, int((t + 1.0) / hop))
         best, bj = t, -1e9
         for i in range(lo, hi):
             j = e[i:i + 3].mean() - e[i - 3:i].mean()
@@ -316,6 +438,18 @@ def analyse(path, verbose=True):
                       "jump_db": round(float(bj), 1), "kind": "break"})
         if sum(q["kind"] == "break" for q in picks) >= 4:
             break
+    # score every candidate (see the docstring): magnitude, contrast, suddenness
+    ref = pdb(int((intro + 0.5) / hop), int(nat_end / hop))       # the body's level
+    w2 = int(2.0 / hop)
+    for q in picks:
+        i = int(round(q["t"] / hop))
+        pre, post = pdb(i - w2, i), pdb(i + 2, i + w2)
+        q["lift_db"] = round(float(post - pre), 1)
+        q["pre_db"] = round(float(pre - ref), 1)
+        # contrast is capped at 12 dB: after a stop, −20 or −40 dB is the same "quiet"
+        q["strength"] = round(float(q["lift_db"] + 0.5 * min(12.0, max(0.0, ref - pre))
+                                    + 0.2 * min(15.0, max(0.0, q["jump_db"]))), 1)
+    strongest = max(picks, key=lambda q: q["strength"]) if picks else None
     reasons = []
     if intro > 2.5:            # the trim takes ~0.5 s; more than 2.5 s is a dead opening
         reasons.append(f"silent intro {intro:.1f}s")
@@ -323,14 +457,16 @@ def analyse(path, verbose=True):
         reasons.append("dead gap(s) " + ", ".join(f"{a:.1f}-{b:.1f}s" for a, b in gaps))
     return {"file": path, "length": round(L, 2), "median_db": round(med, 1),
             "intro_silence": round(intro, 2), "natural_end": round(nat_end, 2), "gaps": gaps,
-            "drops": sorted(picks, key=lambda d: d["t"]), "rejected": bool(reasons),
+            "drops": sorted(picks, key=lambda d: d["t"]), "strongest": strongest,
+            "rejected": bool(reasons),
             "reason": "; ".join(reasons), "rms_0_5": [round(float(v), 1) for v in r05]}
 
 
-def choose_drop(an, turn, lead, need_until, max_offset=3.0):
+def choose_drop(an, turn, lead, need_until, max_offset=MAX_OFFSET_GEN, end=None):
     """The drop of this track that can land on the turn: offset in [0, max_offset], the
-    track still playing at `need_until` after the trim; score = rise, minus a penalty for
-    sitting far from where the plan asked for it (turn + lead)."""
+    track still playing at `need_until` after the trim; score = strength, minus penalties
+    for sitting far from where the plan asked for it (turn + lead) and for the length
+    bed.py would have to add after the track's natural end (when `end` is given)."""
     best = None
     for d in an["drops"]:
         off = d["t"] - (turn - 0.06)
@@ -338,11 +474,43 @@ def choose_drop(an, turn, lead, need_until, max_offset=3.0):
             continue
         short = need_until - (an["length"] - off)
         dead = max(0.0, an["intro_silence"] - off - 0.3)   # near-silence left at frame 1
-        score = d["rise_db"] - 2.0 * max(0.0, abs(d["t"] - (turn + lead)) - 1.0) \
-            - (3.0 if short > 0.5 else 0.0) - 2.0 * dead
+        ext = max(0.0, end - (an["natural_end"] - off)) if end else 0.0
+        score = d.get("strength", d["rise_db"]) \
+            - 2.0 * max(0.0, abs(d["t"] - (turn + lead)) - 1.0) \
+            - (3.0 if short > 0.5 else 0.0) - 2.0 * dead - 1.5 * max(0.0, ext - 0.5)
         if best is None or score > best["score"]:
             best = dict(d, offset=round(off, 3), score=round(score, 2))
     return best
+
+
+def turn_review(results, pick, offset, turn, min_db=TURN_MIN_DB):
+    """The turn gate and the alternatives, as (passed, lines).
+
+    WHY: a pick that only "can land on the turn" is not a good turn. The report must
+    say how big the change on the turn really is, and where the strongest change of each
+    track would land instead, so a weak result is visible before anyone renders it."""
+    ch = pick.get("choice")
+    lift = ch.get("lift_db") if ch else None
+    lines = []
+    if ch:
+        lines.append(f"turn: the change chosen for the turn lifts {lift:+.1f} dB "
+                     f"(at {ch['t']:.2f}s in '{pick['name']}', lands {ch['t'] - offset:.2f}s; "
+                     f"strength {ch.get('strength', 0):.1f})")
+    for r in results:
+        s = r.get("strongest")
+        if not s or (r is pick and ch and abs(s["t"] - ch["t"]) < 0.05):
+            continue
+        off = offset if r is pick else (r["choice"]["offset"] if r.get("choice") else None)
+        where = (f" — would land at {s['t'] - off:.2f}s in the video (turn at {turn:.2f}s)"
+                 if off is not None else " — cannot be aligned to the turn")
+        lines.append(f"strongest change in '{r['name']}': {s['lift_db']:+.1f} dB at "
+                     f"{s['t']:.2f}s in the track{where}")
+    passed = lift is not None and lift >= min_db
+    if not passed:
+        what = (f"only {lift:+.1f} dB" if lift is not None else "no change at all")
+        lines.append(f"✗ WEAK TURN: the change on the turn is {what} (gate ≥ {min_db:.0f} dB) — "
+                     f"the drop will not be heard as the story's turn")
+    return passed, lines
 
 
 # ------------------------------------------------------------------ no-key fallback
@@ -427,10 +595,19 @@ def main():
                     help="re-pick from the variants already in assets/bgm/variants/")
     ap.add_argument("--dry-run", action="store_true", help="print the requests and the estimate")
     ap.add_argument("--force", action="store_true", help="regenerate variants that exist")
+    ap.add_argument("--stronger-turn", action="store_true",
+                    help="the ONE retry after a weak turn: emphatic build/stop/drop instructions")
+    ap.add_argument("--credits", action="store_true",
+                    help="read the balance now and report the measured spend of logged runs")
     ap.add_argument("--max-offset", type=float,
                     help="largest trim allowed (default 3 s for generated tracks; for --file "
                          "anything that still leaves the track long enough)")
     a = ap.parse_args()
+    if a.credits:
+        key = ak.api_key()
+        if not key:
+            sys.exit("no ELEVENLABS_API_KEY in the project's .env or the environment")
+        return ak.ledger_report(key)
     cfg = hfcfg.load(a.config)
     hfcfg.require("ffmpeg", "ffprobe")
     hfcfg.ensure_deps(["numpy"])
@@ -482,14 +659,21 @@ def main():
             sys.exit(f"no variants in {vdir}/")
     else:
         variants = variant_list(plan, a.variants)
-        total = sum(b - s for _, s, b in section_bounds(plan)) + lead + float(plan.get("tail", 2.0))
-        need = int(math.ceil(total / 60 * CREDITS_PER_MIN)) * len(variants)
-        bodies = [(n, {"model_id": "music_v1", "composition_plan": composition(plan, st)})
+        strength = 2 if a.stronger_turn else plan.get("turn_strength", 1)
+        cplan = dict(plan, turn_time=turn) if turn is not None else plan
+        bodies = [(n, {"model_id": "music_v1",
+                       "composition_plan": composition(cplan, st, strength)})
                   for n, st in variants]
+        total = plan_seconds(bodies[0][1]["composition_plan"])
+        need = int(math.ceil(total / 60 * CREDITS_PER_MIN)) * len(variants)
+        if turn is not None and turn_index(cplan) is None:
+            print(f"  ! no plan section starts on the turn ({turn:.2f}s): the build/stop/drop "
+                  f"structure is not added — make a section boundary at the turn")
         if a.dry_run:
             for n, b in bodies:
                 print(f"\n  variant {n}:\n" + json.dumps(b, indent=1, ensure_ascii=False))
-            print(f"\n  {len(bodies)} × {total:.1f}s ≈ {need:,} credits (estimate)")
+            print(f"\n  {len(bodies)} × {total:.1f}s: the gate needs ≈{need:,} credits; "
+                  f"expected spend ≈{int(math.ceil(total / 60 * CREDITS_PER_MIN_EST)) * len(bodies):,}")
             return 0
         key = ak.api_key()
         if not key:
@@ -500,18 +684,25 @@ def main():
                   "    3. no music: skip bed.py — the reel keeps its voice and SFX only.\n"
                   "  Tell the user which one you used.")
             return 2
-        before = ak.require_credits(key, need, f"{len(bodies)} music variant(s) of {total:.0f}s")
+        todo = [n for n, _ in bodies
+                if a.force or not os.path.exists(os.path.join(vdir, f"{n}.mp3"))]
+        before = None
+        if todo:
+            need = int(math.ceil(total / 60 * CREDITS_PER_MIN)) * len(todo)
+            before = ak.require_credits(key, need, f"{len(todo)} music variant(s) of {total:.0f}s")
+        made = 0.0
         for n, body in bodies:                      # SEQUENTIAL: parallel requests 429
             out = os.path.join(vdir, f"{n}.mp3")
-            if os.path.exists(out) and not a.force:
+            if n not in todo:
                 print(f"  variant {n}: exists ({out}), reusing (--force regenerates)")
             else:
                 print(f"  generating variant {n} ({total:.1f}s)…", flush=True)
                 ak.post(MUSIC_URL, body, out, key)
+                made += ak.duration(out) or total
             files.append((n, out))
-        after, _, _ = ak.credits(key)
-        if after is not None:
-            print(f"  credits used: {before - after:,} (left {after:,})")
+        if todo:                                    # never "credits used: 0" — see audiokit
+            ak.spend_report(key, before, int(math.ceil(made / 60 * CREDITS_PER_MIN_EST)),
+                            f"music: {len(todo)} variant(s), {made:.0f}s")
         source = "ElevenLabs Music (generated for this video)"
 
     # ---------------------------------------------------------------- analyse + pick
@@ -520,14 +711,20 @@ def main():
     for n, f in files:
         an = analyse(f)
         an["name"] = n
-        # A generated track was planned around the turn: its drop should sit within ~3 s.
-        # A user's song was not — its best drop may be a minute in; trim as far as needed.
+        # A generated track was planned around the turn, but the model places a section
+        # change only roughly (measured: one variant on time, the other 5.5 s late), so a
+        # generated track may be trimmed up to MAX_OFFSET_GEN s — choose_drop() pays for
+        # distance and for any length bed.py must add. A user's song was not planned at
+        # all — its best drop may be a minute in; trim as far as needed.
         mo = a.max_offset if a.max_offset is not None else \
-            (3.0 if not a.file else max(3.0, an["length"] - need_until - 1.0))
-        an["choice"] = choose_drop(an, turn, lead, need_until, mo) if turn else None
+            (MAX_OFFSET_GEN if not a.file else max(3.0, an["length"] - need_until - 1.0))
+        an["choice"] = choose_drop(an, turn, lead, need_until, mo, end) if turn else None
         results.append(an)
-        dr = ", ".join(f"{d['t']:.2f}s ({d['kind']} {d['rise_db']} dB)" for d in an["drops"]) or "none"
-        print(f"  drops: {dr}")
+        dr = ", ".join(f"{d['t']:.2f}s ({d['kind']} {d['lift_db']:+.1f} dB, strength "
+                       f"{d['strength']:.1f})" for d in an["drops"]) or "none"
+        print(f"  changes: {dr}")
+        if an["strongest"]:
+            print(f"  strongest: {an['strongest']['t']:.2f}s ({an['strongest']['lift_db']:+.1f} dB)")
         print(f"  intro silence {an['intro_silence']:.2f}s, natural end {an['natural_end']:.1f}s"
               f"{'   ✗ REJECTED: ' + an['reason'] if an['rejected'] else ''}")
     ok = [r for r in results if not r["rejected"]] or []
@@ -562,9 +759,16 @@ def main():
               f"of near-silence — bed.py lifts the hook section, but a hook wants music "
               f"from frame 1 (regenerate with 'starts immediately' if it reads empty)")
     ref = outro_start if outro_start else end
+    gate_ok, gate_lines = (turn_review(ok, pick, offset, turn) if turn is not None
+                           else (True, []))
+    if turn is not None and a.procedural:
+        gate_ok = True              # the synth bed puts its own hit on the turn
     rep = {"source": source, "chosen": pick["name"], "music": dst, "offset": round(offset, 3),
            "drop_track_time": drop_t, "turn": turn_label, "turn_time": turn,
            "drop_lands_at": round(drop_t - offset, 3) if drop_t is not None else None,
+           "turn_gate": {"lift_db": (pick.get("choice") or {}).get("lift_db"),
+                         "min_db": TURN_MIN_DB, "passed": gate_ok,
+                         "strength": 2 if a.stronger_turn else plan.get("turn_strength", 1)},
            "natural_end_video": nat_video, "outro_start": outro_start, "end": end,
            "ending_vs_outro": round(nat_video - ref, 2),
            "sections": [[n, round(s, 2), round(b, 2)] for n, s, b in section_bounds(plan)]
@@ -576,16 +780,123 @@ def main():
     if drop_t is not None:
         print(f"    drop at {drop_t:.2f}s in the track; offset {offset:.3f}s → it lands at "
               f"{drop_t - offset:.2f}s, 0.06 s before the turn ({turn_label})")
+    for ln in gate_lines:
+        print("    " + ln)
     where = "the outro start" if outro_start else "the end"
     d = nat_video - ref
     print(f"    the track's natural ending lands at {nat_video:.2f}s, "
           f"{abs(d):.2f}s {'after' if d >= 0 else 'BEFORE'} {where} ({ref:.2f}s)")
-    if nat_video < end - 0.5:
-        print(f"    ! the music runs out {end - nat_video:.1f}s before the composition ends "
-              f"— bed.py pads silence; consider a longer last section")
-    print(f"    report → {REPORT}\n  next: python3 scripts/bed.py --init && python3 scripts/bed.py")
+    if nat_video < end - 0.3:
+        print(f"    ! the music audibly ends {end - nat_video:.1f}s before the last frame — "
+              f"bed.py extends it with a natural tail (a crossfaded loop of the last bar or "
+              f"a reverb wash) and reports it; a smaller offset or a longer ring-out avoids it")
+    print(f"    report → {REPORT}")
+    if not gate_ok:
+        retry = "" if a.stronger_turn else " --stronger-turn"
+        est = int(math.ceil(len(ok) * (end + lead + TAIL_MIN) / 60 * CREDITS_PER_MIN_EST))
+        print("\n  " + "=" * 74)
+        print(f"  ✗ TURN GATE FAILED: the change landing on the turn is below "
+              f"{TURN_MIN_DB:.0f} dB.")
+        if a.file:
+            print("    This is the user's track: try another one, or align a different "
+                  "moment with --turn-time. Tell the user the turn is weak.")
+        elif a.stronger_turn:
+            print("    This was already the stronger-turn round. Do NOT regenerate again: keep "
+                  "the best of\n    what you have, let bed.py's drop before the turn sell the "
+                  "hit, and tell the user.")
+        else:
+            print(f"    Regenerate ONCE with stronger turn instructions (≈{est:,} credits):\n"
+                  f"      python3 scripts/music.py --force{retry}\n"
+                  f"    Never loop: if that round is weak too, keep the best result and say so.")
+        print("    assets/bgm/music.mp3 was still written, so the edit can go on.")
+        print("  " + "=" * 74)
+        return 3
+    print("  next: python3 scripts/bed.py --init && python3 scripts/bed.py")
     return 0
 
 
+def selftest():
+    """Negative tests — `music.py selftest`. Synthetic tracks in a temp folder, no key,
+    no credits. Each one is a failure that shipped once. Exit 1 on failure."""
+    import tempfile
+    import numpy as np
+    fails = []
+    tmp = tempfile.mkdtemp(prefix="music_selftest_")
+    rng = np.random.default_rng(3)
+
+    def track(name, spans):
+        """[(t0, t1, level_dB)] of white noise → a wav; uniform noise RMS is −4.8 dBFS."""
+        n = int(spans[-1][1] * ak.SR)
+        x = rng.uniform(-1, 1, n)
+        g = np.zeros(n)
+        for a0, a1, lv in spans:
+            g[int(a0 * ak.SR):int(a1 * ak.SR)] = 10 ** ((lv + 4.8) / 20)
+        p = os.path.join(tmp, name + ".wav")
+        ak.write_wav(p, x * g)
+        return p
+    # 1. the round-2 failure: a big lift far from the turn, a +4.5 dB step inside a
+    #    plateau on the turn → the step is chosen (it is all that can land), the report
+    #    names the strongest change, and the GATE fails
+    an = analyse(track("plateau", [(0, 8, -30), (8, 20, -12), (20, 30, -7.5)]), verbose=False)
+    an["name"] = "plateau"
+    an["choice"] = choose_drop(an, 19.5, 0.5, 25.0, 3.0, 30.0)
+    if not an["strongest"] or abs(an["strongest"]["t"] - 8.0) > 0.3:
+        fails.append(f"plateau: strongest change should be at 8 s, got {an['strongest']}")
+    ok, lines = turn_review([an], an, an["choice"]["offset"] if an["choice"] else 0, 19.5)
+    if ok or not any("WEAK TURN" in ln for ln in lines) \
+            or not any("strongest change" in ln and "would land" in ln for ln in lines):
+        fails.append(f"plateau: gate must FAIL and name the strongest change: {lines}")
+    # 2. a filtered build, a stop, a full drop on turn + lead → chosen, gate passes
+    an = analyse(track("built", [(0, 14, -14), (14, 19.5, -24), (19.5, 20.0, -70),
+                                 (20.0, 30, -8)]), verbose=False)
+    an["name"] = "built"
+    an["choice"] = choose_drop(an, 19.5, 0.5, 25.0, 3.0, 30.0)
+    ch = an["choice"]
+    if not ch or abs(ch["t"] - 20.0) > 0.1:
+        fails.append(f"built: the drop at 20.0 s should be chosen, got {ch}")
+    else:
+        ok, lines = turn_review([an], an, ch["offset"], 19.5)
+        if not ok:
+            fails.append(f"built: gate should pass: {lines}")
+    # 3. the plan carries the turn structure, the ring-out, and no 'EDM drop' veto
+    plan = {"turn_time": 19.5, "lead": 0.5, "tail": 2.0,
+            "negative_global_styles": ["vocals", "EDM drop"],
+            "sections": [{"name": "hook", "end": 6.0, "styles": ["a"]},
+                         {"name": "tension", "end": 19.5, "styles": ["b"]},
+                         {"name": "turn", "end": 26.0, "styles": ["c"]},
+                         {"name": "outro", "end": 30.0, "styles": ["d"]}]}
+    c = composition(plan, ["g"])
+    secs = c["sections"]
+    if not any("sudden stop" in x for x in secs[1]["positive_local_styles"]) \
+            or "silence" in secs[1]["negative_local_styles"]:
+        fails.append("plan: the section before the turn must end on a stop (and not veto silence)")
+    if "sudden full drop on the very first beat" not in secs[2]["positive_local_styles"][0]:
+        fails.append("plan: the turn section must START with the full drop instruction")
+    if any(x.lower() == "edm drop" for x in c["negative_global_styles"]):
+        fails.append("plan: 'EDM drop' must not be a global negative (it vetoes the drop)")
+    if secs[-1]["section_name"] != "Ring out" or secs[-1]["duration_ms"] < TAIL_MIN * 1000 \
+            or plan_seconds(c) < 30.0 + 0.5 + TAIL_MIN - 0.01:
+        fails.append(f"plan: a ≥ {TAIL_MIN} s ring-out must follow END ({plan_seconds(c):.1f}s)")
+    if "THE DROP" not in composition(plan, ["g"], 2)["sections"][2]["positive_local_styles"][0]:
+        fails.append("plan: --stronger-turn must use the emphatic drop instruction")
+    if turn_index(dict(plan, turn_time=12.0)) is not None:
+        fails.append("plan: a turn that is not on a section boundary must not get structure")
+    # 4. the spend report never claims 0 while the balance lags
+    txt = " ".join(ak.spend_text(1714, 79460, 79460))
+    if "≈1,714" not in txt or "lags" not in txt or "used: 0" in txt:
+        fails.append(f"spend: a lagging balance must report the estimate + the lag: {txt}")
+    if "1,700 so far" not in " ".join(ak.spend_text(1714, 79460, 77760)):
+        fails.append("spend: a caught-up balance must report the measured change")
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+    for f in fails:
+        print("  ✗ " + f)
+    print(f"  music selftest: {'all passed' if not fails else f'{len(fails)} failed'}")
+    return 1 if fails else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["selftest"]:
+        hfcfg.ensure_deps(["numpy"])
+        sys.exit(selftest())
     sys.exit(main())

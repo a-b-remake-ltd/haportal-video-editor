@@ -249,6 +249,81 @@ def require_credits(key, need, what):
     return left
 
 
+# ------------------------------------------------------------------ what a run cost
+# WHY an estimate AND a ledger: GET /v1/user/subscription lags minutes behind a
+# generation. Reading it right after a batch gave "credits used: 0" on every run while
+# the balance really dropped ~1,700 per music round — a number that is simply wrong is
+# worse than none. So every run reports the ESTIMATE (from what was actually generated),
+# shows the measured balance change only for what it is, and appends to a small ledger
+# so `python3 scripts/audiokit.py credits` (or `music.py --credits`) can report the real,
+# measured spend a few minutes later.
+LEDGER = os.path.join("build", "credits_ledger.json")
+LAG_NOTE = ("ElevenLabs' balance lags minutes behind a generation; re-read it later with "
+            "python3 scripts/music.py --credits")
+
+
+def spend_text(estimate, before, after):
+    """The lines that report one run's spend. Pure (no I/O), so selftests can prove it
+    never claims a 0 spend: the measured change is shown only when the balance has
+    visibly caught up (≥ 25 % of the estimate), otherwise it is called what it is."""
+    lines = [f"credits spent: ≈{estimate:,} (estimate from the generated length)"]
+    if before is None or after is None:
+        lines.append("measured: the balance could not be re-read — " + LAG_NOTE)
+    elif after > before:
+        lines.append(f"measured: the balance went UP ({before:,} → {after:,}) — the plan "
+                     f"renewed or was topped up; the estimate is the best number")
+    else:
+        d = before - after
+        if d >= 0.25 * max(1, estimate):
+            lines.append(f"measured: {d:,} so far ({before:,} → {after:,})")
+        else:
+            lines.append(f"measured: not yet visible ({before:,} → {after:,}) — " + LAG_NOTE)
+    return lines
+
+
+def spend_report(key, before, estimate, what):
+    """Print what a run cost and log it in the ledger. `before` = the balance read by
+    require_credits() right before the first request."""
+    after, _, _ = credits(key) if key else (None, None, None)
+    for ln in spend_text(estimate, before, after):
+        print("  " + ln)
+    try:
+        led = json.load(open(LEDGER, encoding="utf-8")) if os.path.exists(LEDGER) else []
+    except ValueError:
+        led = []
+    led.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "what": what,
+                "estimate": int(estimate), "before": before, "after_at_end": after})
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    json.dump(led, open(LEDGER, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    return after
+
+
+def ledger_report(key):
+    """The measured spend since the first logged run vs the sum of the estimates. Run it
+    a few minutes after a batch, when the balance has caught up."""
+    led = json.load(open(LEDGER, encoding="utf-8")) if os.path.exists(LEDGER) else []
+    now, lim, tier = credits(key)
+    if now is None:
+        print(f"  could not read the ElevenLabs balance ({tier})")
+        return 1
+    print(f"  ElevenLabs credits now: {now:,} left of {lim:,} ({tier})")
+    runs = [r for r in led if r.get("before") is not None]
+    if not runs:
+        print(f"  no generation logged in {LEDGER} yet")
+        return 0
+    est = sum(int(r.get("estimate") or 0) for r in runs)
+    first = runs[0]["before"]
+    for r in runs:
+        print(f"    {r['time']}  {r['what']:40s} ≈{int(r.get('estimate') or 0):,}")
+    if now > first:
+        print(f"  the balance is higher than before the first run ({first:,}) — it renewed "
+              f"or was topped up; estimates total ≈{est:,}")
+    else:
+        print(f"  measured since {runs[0]['time']}: {first - now:,} "
+              f"(estimates ≈{est:,}; anything else spent on this account in between counts too)")
+    return 0
+
+
 def post(path, body, out, key, retries=3, timeout=900):
     """POST json, write the returned audio bytes to `out`. Retries 429/5xx with a pause
     (parallel music requests hit 429 — callers run them one after another anyway)."""
@@ -275,3 +350,13 @@ def post(path, body, out, key, retries=3, timeout=900):
             print(f"    retry in 20 s ({last[:120]})", flush=True)
             time.sleep(20)
     sys.exit(f"ElevenLabs request failed ({path}): {last}")
+
+
+if __name__ == "__main__":
+    # `python3 scripts/audiokit.py credits` — the measured spend once the balance caught up.
+    if sys.argv[1:2] != ["credits"]:
+        sys.exit("usage: python3 scripts/audiokit.py credits   (run in the project folder)")
+    k = api_key()
+    if not k:
+        sys.exit("no ELEVENLABS_API_KEY in the project's .env or the environment")
+    sys.exit(ledger_report(k))

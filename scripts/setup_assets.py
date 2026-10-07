@@ -10,7 +10,9 @@ Creates everything the pipeline needs, and NOTHING that is not free to redistrib
                   and a sha256 in assets/fonts/fonts.lock.json.
   assets/sfx/     risers, booms, whooshes, shutters, impacts, pops, clicks, a cash cue
                   and three tier cues — all SYNTHESISED here, normalised to -6 dBFS peak.
-                  No licence, no attribution, no takedown risk.
+                  No licence, no attribution, no takedown risk. Recorded as "synth" in
+                  assets/sfx/library.json, so `sfx.py library` with a key upgrades the
+                  named set later.
   assets/flares/  two vertical anamorphic lens-flare clips for the hook transition,
                   generated procedurally, ready to screen-blend.
   assets/vendor/  gsap.min.js, fetched at setup time (never redistributed with the skill).
@@ -470,19 +472,30 @@ def main():
         sdir = os.path.join(ASSETS, "sfx")
         os.makedirs(sdir, exist_ok=True)
         made = 0
+        import sfx as sfxlib            # the provenance manifest (stdlib only at import)
+        known = sfxlib.load_manifest(sdir)
         for name, fn in SFX.items():
             path = os.path.join(sdir, name)
+            cue = os.path.splitext(name)[0]
             if os.path.exists(path) and not a.force:
+                if cue not in known:    # made by an older setup run: record it as synth
+                    sfxlib.record(sdir, cue, "synth", origin="setup_assets.py")
                 continue
             _write_wav(path, fn(), peak_db=-6.0)
+            sfxlib.record(sdir, cue, "synth", origin="setup_assets.py")
             made += 1
         say(f"sfx     : {made} synthesised, {len(SFX)} total in assets/sfx (peak -6 dBFS)")
         # The named cue set the kit, moments and outro use (soft_whoosh, swap_pop, ding,
         # bars, snap, shatter, logo_sting…): synthesised stand-ins so every name resolves
-        # with no key and no credits. sfx.py library (with a key) upgrades them later.
+        # with no key and no credits — install time comes BEFORE anyone has a key. Every
+        # cue is recorded as "synth" in assets/sfx/library.json, so `sfx.py library` run
+        # later WITH a key knows to upgrade them (it used to fill only missing cues, and
+        # the stand-ins stayed forever).
         r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx.py"), "--dir", sdir,
                             "library", "--synth"], capture_output=True, text=True)
-        say("sfx     : named cue set " + ("ready" if r.returncode == 0 else
+        say("sfx     : named cue set " + ("ready (synthesised stand-ins: in a project, "
+                                          "`sfx.py library` with an ElevenLabs key upgrades "
+                                          "them)" if r.returncode == 0 else
                                           "incomplete — run scripts/sfx.py library"))
 
     # --------------------------------------------------------------- flares

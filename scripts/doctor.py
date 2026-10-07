@@ -23,7 +23,10 @@ What --install does (each step only when it is missing):
      heavy, off by default.
   3. downloads the Hebrew model ivrit-ai/whisper-large-v3-turbo-ct2 (~1.6 GB, once, into
      ~/.cache/huggingface).
-  4. runs scripts/setup_assets.py (fonts, synthesised SFX, flares, gsap).
+  4. runs scripts/setup_assets.py (fonts, synthesised SFX, flares, gsap). The SFX are
+     stand-ins (no key exists at install time), recorded as such in
+     assets/sfx/library.json; the check says so, and `sfx.py library` with a key
+     upgrades them.
   5. caches the HyperFrames CLI (`npx --yes hyperframes --version`).
 It never installs system software (ffmpeg, Node, Chrome) — it prints the exact command.
 """
@@ -218,6 +221,53 @@ def check_assets():
     else:
         names = ", ".join(sorted({os.path.splitext(os.path.basename(f))[0] for f in fonts}))
         line(OK, "skill assets", f"fonts ({names}), {sfx} sfx, flares, gsap")
+    check_sfx_provenance()
+
+
+def check_sfx_provenance():
+    """Are the named SFX real or synthesised stand-ins? WHY: `--install` synthesises them
+    (there is no key at install time) and nothing used to say so afterwards — a user who
+    added a key kept the stand-ins without knowing. Checks the skill's set and, when run
+    from a project folder, the project's (which is what a build plays)."""
+    try:
+        import sfx as sfxlib
+        import audiokit as ak
+    except Exception as e:                    # never let a report crash the doctor
+        line(INFO, "SFX provenance", f"not checked ({e})")
+        return
+    key = bool(ak.api_key())
+    dirs = [("skill", os.path.join(hfcfg.SKILL_DIR, "assets", "sfx"))]
+    proj = os.path.abspath(os.path.join(os.getcwd(), "assets", "sfx"))
+    if os.path.isdir(proj) and proj != os.path.abspath(dirs[0][1]):
+        dirs.append(("project", proj))
+    for label, d in dirs:
+        if not os.path.isdir(d):
+            continue
+        pv = sfxlib.provenance(d)
+        stand = [n for n, k in pv.items() if k == "synth"]
+        kinds = ", ".join(f"{sum(1 for v in pv.values() if v == k)} {k}"
+                          for k in ("elevenlabs", "user", "synth", "unknown")
+                          if any(v == k for v in pv.values()))
+        where = f"{label} ({d})"
+        if not stand:
+            line(OK, f"SFX {label}", f"{kinds or 'none yet'}")
+        elif key and (label == "project" or len(dirs) == 1):
+            # the project's set is what a build plays; the skill's is what new projects copy
+            fix = ("python3 <skill>/scripts/sfx.py library        (in this project folder)"
+                   if label == "project" else
+                   "python3 scripts/sfx.py --dir assets/sfx library   (in the skill folder:\n"
+                   "new projects then copy generated cues), or the same in each project")
+            line(WARN, f"SFX {label}", f"{len(stand)} of {len(pv)} named cues are synthesised "
+                 f"stand-ins and an ElevenLabs key is set — run sfx.py library with a key to "
+                 f"upgrade them ({where})", fix + "\ncredits are checked first; --keep-synth keeps them")
+        elif key:
+            line(INFO, f"SFX {label}", f"{len(stand)} of {len(pv)} named cues are synthesised "
+                 f"stand-ins; new projects copy them — `sfx.py --dir {d} library` upgrades "
+                 f"this shared set too")
+        else:
+            line(INFO, f"SFX {label}", f"{len(stand)} of {len(pv)} named cues are synthesised "
+                 f"stand-ins — run sfx.py library with a key to upgrade "
+                 f"(or --from DIR with files you own); fine without one")
 
 
 def check_scribe():
