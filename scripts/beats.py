@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """THE beat map — the single source of truth for layout state and caption slot.
 
-Copy this into your project as `scripts/beats.py` and edit BEATS. Both the
-composition builder and the caption-layer builder import it, so a cut point can
-never move in one without moving in the other.
+Copy this into your project as `scripts/beats.py`. Both the composition builder and the
+caption-layer builder import it, so a cut point can never move in one without moving in
+the other.
+
+WHEN TO EDIT IT. Most reels never do: a talking head that stays full-screen (the default,
+an avatar or a single take, with designed moments drawn OVER the speaker by scenes.py) is
+the one "std" beat below, as shipped. Edit BEATS only when the LAYOUT of the speaker
+changes along the reel:
+  * "panel"  the speaker drops into a lower panel under a B-roll / graphic panel on top
+  * "ctr" / "hi"  a full-frame B-roll covers the speaker (caption centred / lifted)
+  * "hook"   ONLY a matted hook (media.json "hook" with a matte: the speaker cut out over a
+             blurred backdrop). The kit's flying hook world is NOT a beat — scenes.py
+             drives it — and a "hook" beat on a plain take makes the outro and the punch
+             planner treat the opening as matted.
+Every beat start must sit on a segment boundary (src/bounds.json) — run this file to check.
+END stays 0.0: build_index.py sets it from the A-roll's real duration.
 
 The failure this prevents: a hand-written `SLOTS = [(start, end, class)]` table kept
 alongside a separate visual beat map. They drift, and the symptom lands on the
@@ -19,7 +32,7 @@ import sys
 # Vertical position (plate TOP) of the caption, per layout state. See references/captions.md
 # and references/grid.md. The speaker states sit in the Reels caption band (y 1110-1190),
 # read from scripts/grid.py so the grid has one owner. Every slot must pass
-# `grid.py check` — the plate is centred on x 500, never 540.
+# `grid.py check` — the plate is centred the way grid.centered_box() says.
 try:
     import grid as _grid
     _band_top = _grid.caption_top(_grid.profile("reels"), _grid.plate_height(70))
@@ -38,14 +51,15 @@ SLOT = {
 # (start_seconds, kind, tag).  `kind` must be a key of SLOT.
 # `tag` is free-text for humans and for the validator's error messages.
 BEATS = [
-    (0.00, "hook", "hook — matte over blurred backdrop"),
-    # (8.28,  "std",   "plain A-roll"),
+    (0.00, "std", "speaker full-screen (the default — keep it unless the layout changes)"),
+    # (0.00,  "hook",  "ONLY a matted hook: the speaker cut out over a blurred backdrop"),
+    # (8.28,  "std",   "plain A-roll after the matted hook"),
     # (11.56, "ctr",   "full-frame B-roll: step 1"),
     # (17.50, "hi",    "the click happens dead centre — lift the caption"),
     # (21.22, "std",   "A-roll, steady push"),
 ]
 
-END = 0.0          # composition duration — set from the A-roll's REAL duration
+END = 0.0          # leave it: build_index.py sets it from the A-roll's REAL duration
 FRAME = 0.04       # 25 fps — keep in step with config.json project.fps
 
 

@@ -95,6 +95,100 @@ HOLE_MIN_SCREEN_R = 40
 # overlap disappears under the ink, and an anti-aliased hole edge never shows background.
 HOLE_OVERSCAN = 1.05
 
+# The slow push on the whole lockup after it lands, per style. The lockup is sized so it
+# still fits the centred lane at the END of the push (and, for impact, at the peak of its
+# ±9 px landing shake).
+PUSH = {"gate": 1.045, "portal": 1.035, "line": 1.03, "impact": 1.04}
+IMPACT_SHAKE = 9
+
+
+def centre_lane(g, W):
+    """(x0, width) of the widest box centred on the FRAME centre inside the safe zone —
+    x 140-940 on Reels (800 px).
+
+    WHY: the outro used to centre on the safe zone's middle (x 500) and, when the lockup
+    poked into the right rail, shift it left as one piece ("grid shift"). On screen that
+    reads as off-centre: the owner's note after watching a test reel was that the logo is
+    not centred. The rule now is the one every layout follows (grid.centered_box): centred
+    on x 540, and a lockup too wide for the lane is SCALED DOWN until it fits, never moved."""
+    if hasattr(grid, "center_lane"):
+        x0, w = grid.center_lane(g)
+        return float(x0), float(w)
+    # TODO: grid.center_lane / grid.centered_box are being added to grid.py with this
+    # same rule; this local copy only covers a grid.py without them.
+    sx0, _, sx1, _ = g["safe"]
+    cx = W / 2.0
+    half = min(cx - sx0, sx1 - cx)
+    return cx - half, 2 * half
+
+
+def centring_problems(box, lane, push=1.0, tol=0.5):
+    """The outro's centring gate on its own geometry. `box` = [x0, y0, x1, y1] of the
+    lockup (the logo; the tagline and handle boxes are the lane itself, text-align
+    centre), `lane` = (x0, width). The box must be centred on the lane's centre and still
+    fit the lane after the push. Returns problems ([] = clean)."""
+    out = []
+    x0, _, x1, _ = box
+    lx0, lw = lane
+    cx = lx0 + lw / 2.0
+    off = (x0 + x1) / 2.0 - cx
+    if abs(off) > tol:
+        out.append(f"lockup centred on x {(x0 + x1) / 2:.1f}, not the frame centre {cx:.0f} "
+                   f"(left margin {x0:.0f}, right margin {2 * cx - x1:.0f})")
+    if (x1 - x0) * push > lw + tol:
+        out.append(f"lockup {x1 - x0:.0f} px wide × push {push} = {(x1 - x0) * push:.0f} px "
+                   f"> the centred lane {lw:.0f} px — it must be scaled down, not moved")
+    return out
+
+
+def follow_push(origin, t, s1, pivot, push):
+    """The footage transform that keeps it glued to the lockup while the lockup pushes.
+
+    The footage (the door / circle, inside the mark's opening) is not inside the pushed
+    element, so a push pivoting anywhere but the opening slides the opening off the face.
+    GSAP maps p → origin + (p − origin)·s + t; a push about `pivot` by `push` then maps
+    q → pivot + (q − pivot)·push. Composed: scale s1·push and
+    t' = (origin + t − pivot)·push + pivot − origin. Both are linear in the push scale, so
+    a linear (ease "none") tween from (t, s1) to (t', s1·push) tracks it on every frame."""
+    ox, oy = origin
+    tx, ty = t
+    px, py = pivot
+    return ((ox + tx - px) * push + px - ox, (oy + ty - py) * push + py - oy, s1 * push)
+
+
+def tagline_duplication(brand, tagline):
+    """A tagline that repeats words already INSIDE the logo image reads twice on screen
+    (a test reel: logo "<brand> / לבינה מלאכותית", tagline "הפורטל לבינה מלאכותית").
+    No OCR: brand.json is the signal. If it records the logo's text (logo.text, logo.words,
+    logo.mark.text, top-level text), the shared words are named; otherwise a text part
+    under (or over) the mark plus a tagline is enough to warn. Returns a warning or None."""
+    tag = (tagline or "").strip()
+    if not tag:
+        return None
+    lg = (brand or {}).get("logo") or {}
+    mk = lg.get("mark") or {}
+    texts = []
+    for v in (lg.get("text"), lg.get("words"), mk.get("text"), (brand or {}).get("text")):
+        if isinstance(v, str):
+            texts.append(v)
+        elif isinstance(v, (list, tuple)):
+            texts += [str(x) for x in v]
+    norm = lambda w: re.sub(r"[^\w]", "", w.lower())
+    if texts:
+        have = {norm(w) for t in texts for w in t.split() if norm(w)}
+        shared = [w for w in tag.split() if norm(w) in have]
+        if shared:
+            return (f"the tagline repeats words already in the logo ({' '.join(shared)}) — "
+                    f"they will read twice; suggest leaving the tagline empty")
+        return None
+    parts = mk.get("parts") or {}
+    if parts.get("below") or parts.get("above"):
+        side = "under" if parts.get("below") else "over"
+        return (f"the logo already has a line of text {side} its mark and a tagline is set — "
+                f"if the tagline repeats it (look at brand/word_{'below' if side == 'under' else 'above'}.png), "
+                f"it reads twice; suggest leaving the tagline empty")
+    return None
+
 
 # ------------------------------------------------------------------- colour
 def _rgb(h):
@@ -608,7 +702,8 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
     F = round(1.0 / fps, 4)
     g = grid.from_config(cfg)
     gx0, gy0, gx1, gy1 = g["safe"]
-    cxs = g["center_x"]
+    lane = centre_lane(g, W)              # (140, 800) on Reels: centred on the FRAME, x 540
+    cxs = lane[0] + lane[1] / 2.0
     lang_dir = cfg.get("language", {}).get("direction", "rtl")
     style = st["style"]
 
@@ -648,9 +743,15 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         E = round(round((O + DURATION[style]) / F) * F, 3)
         fz0 = round(aroll_end - F, 3)          # the freeze shows the video's last frame
         s0, y0 = state or aroll_state(beatmap)
+        dup = tagline_duplication(brand, st.get("tagline"))
+        if dup:
+            say("! " + dup)
         if style == "gate":
-            return _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0,
-                              g, W, H, lang_dir, root, say)
+            p_ = _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0,
+                            g, W, H, lang_dir, root, say)
+            if dup:
+                p_["info"]["warnings"] = [dup]
+            return p_
 
         # --------------------------------------------------- background
         paper, ink = col["paper"], col["ink"]
@@ -702,7 +803,10 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         # ------------------------------------------------------- geometry
         lw = math.sqrt(LOGO_AREA * asp)
         lh = lw / asp
-        k = min(1.0, LOGO_MAX_W / lw, LOGO_MAX_H / lh)
+        # the widest the logo may be: the centred lane at the END of the push (and at the
+        # peak of impact's shake) — wider is SCALED DOWN, never shifted off the centre
+        fit_w = (lane[1] - (2 * IMPACT_SHAKE if style == "impact" else 0)) / PUSH[style]
+        k = min(1.0, LOGO_MAX_W / lw, LOGO_MAX_H / lh, fit_w / lw)
         lw, lh = lw * k, lh * k
         sc = lw / lw0                                   # logo px → screen px
 
@@ -714,7 +818,7 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             if ok_round and float(h0["r"]) * sc < HOLE_MIN_SCREEN_R:
                 # grow the logo (within the safe zone) until the hole can hold a face
                 grow = min(HOLE_MIN_SCREEN_R / (float(h0["r"]) * sc),
-                           LOGO_MAX_W / lw, (LOGO_MAX_H + 80) / lh)
+                           min(LOGO_MAX_W, fit_w) / lw, (LOGO_MAX_H + 80) / lh)
                 lw, lh = lw * grow, lh * grow
                 sc = lw / lw0
             if not ok_round:
@@ -734,12 +838,14 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         handle = (st.get("handle") or "").strip()
         tfs = 0
         if tagline:
+            # one line, centred in the lane: the size comes down until it fits (≈0.56 em
+            # per character in the brand fonts measured)
             n = max(1, len(tagline))
-            tfs = int(max(30, min(50, (gx1 - gx0 - 140) / (0.56 * n))))
-            if 0.56 * n * 30 > gx1 - gx0 - 40:
-                say(f"tagline is {n} chars — too long for one line inside the safe zone; "
-                    f"shorten it (≤ ~40 chars)")
-        hfs = 36 if handle else 0
+            tfs = int(max(22, min(50, (fit_w - 40) / (0.56 * n))))
+            if tfs < 30:
+                say(f"tagline is {n} chars — {tfs}px to fit one centred line; shorten it "
+                    f"(≤ ~40 chars)")
+        hfs = int(max(22, min(36, (fit_w - 40) / (0.62 * max(1, len(handle)))))) if handle else 0
         gap_rule, gap_tag, gap_handle = 44, 30, 18
         th = round(tfs * 1.25) if tagline else 0
         hh = round(hfs * 1.25) if handle else 0
@@ -771,7 +877,9 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         # -------------------------------------------------------- the face
         face = st.get("face")
         if face:
-            fx, fy, fw, how = float(face[0]), float(face[1]), 0.0, "config"
+            fx, fy = float(face[0]), float(face[1])
+            fw = float(face[2]) if len(face) > 2 else 0.0
+            how = st.get("_face_how", "config")
         elif style != "portal":           # only the portal flies the face anywhere
             fx, fy, fw, how = W / 2, H * 0.28, 0.0, "not needed for this style"
         else:
@@ -843,7 +951,7 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
     css = string.Template(open(os.path.join(TEMPLATE_DIR, "outro.css"),
                                encoding="utf-8").read()).substitute(
         style=style, W=W, H=H, bg=bg_css, fade=fade, rule=rule, wipe_w=5,
-        push_ox=r(land_x if style == "portal" else cxs),
+        push_ox=r(cxs),
         push_oy=r(land_y if style == "portal" else ly + lh / 2),
         lx=r(lx), ly=r(ly), lw=r(lw), lh=r(lh), lox=r(lox), loy=r(loy),
         dx=r(land_x - math.ceil(iris_end + 8)), dy=r(land_y - math.ceil(iris_end + 8)),
@@ -851,7 +959,7 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         disc="var(--brand-primary)",
         rx=r(rx), ry=r(ry), rw=r(rw),
         rule_origin=("100% 50%" if rtl else "0% 50%") if style == "line" else "50% 50%",
-        gx0=gx0 + 50, gw=gx1 - gx0 - 100, ty=r(ty), th=th, tfs=tfs, dir=lang_dir, tag_color=tag_color,
+        gx0=r(lane[0]), gw=r(lane[1]), ty=r(ty), th=th, tfs=tfs, dir=lang_dir, tag_color=tag_color,
         hy=r(hy), hh=hh, hfs=hfs, handle_color=handle_color,
         flash_w=W + 160, flash_h=H + 160)
 
@@ -870,7 +978,7 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         sfx.append({"id": cid, "src": path, "start": r(t), "duration": r(dur),
                     "volume": cue_volume(cfg, voice_ref, name, full)})
 
-    def push(t0, to=1.035):
+    def push(t0, to):
         js.append(f"      tl.fromTo(\"#olockin\", {{ scale: 1 }}, {{ scale: {to}, "
                   f"duration: {r(E - t0)}, ease: \"none\", immediateRender: false }}, {r(t0)});")
 
@@ -944,7 +1052,13 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         js.append(f"      tl.fromTo(\"#orule\", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.7, "
                   f"ease: \"power3.out\", immediateRender: false }}, {r(O + 1.95)});")
         text_in(O + 2.05, O + 2.4)
-        push(t_land)
+        push(t_land, PUSH["portal"])
+        # the footage (the face in the hole) follows the push, which now pivots on the
+        # frame centre — not on the hole — so the lockup stays centred to the last frame
+        fx_, fy_, fs_ = follow_push((oxo, oyo), (tx, ty_), s1, (cxs, land_y), PUSH["portal"])
+        js.append(f"      tl.fromTo({FOOT}, {{ x: {r(tx)}, y: {r(ty_)}, scale: {round(s1, 5)} }}, "
+                  f"{{ x: {r(fx_)}, y: {r(fy_)}, scale: {round(fs_, 5)}, duration: {r(E - t_land)}, "
+                  f"ease: \"none\", immediateRender: false }}, {r(t_land)});")
         fade_out()
         cue("page", O + 0.03, "osfx_page")
         cue("vault", t_land - 0.02, "osfx_vault")
@@ -984,14 +1098,14 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
                       f"tl.set(el, {{ opacity: 1 }}, {r(t_type)} + i * {step}));")
             t_type += step * len(chars)
         text_in(0, t_type + 0.15)
-        push(O + 0.4, 1.03)
+        push(O + 0.4, PUSH["line"])
         fade_out()
         cue("page", O, "osfx_page")
         cue("shimmer", O + 0.45, "osfx_shimmer")
 
     else:  # impact
         t_hit = O + 0.28
-        slam_from = round(max(1.0, min(1.6, (gx1 - gx0 - 8) / lw,
+        slam_from = round(max(1.0, min(1.6, (lane[1] - 8) / lw,
                                        2 * min(ly + lh / 2 - gy0, gy1 - ly - lh / 2) / lh)), 3)
         js += [
             f"      tl.set({FOOT}, {{ opacity: 0 }}, {r(O)});",   # the hard cut
@@ -1013,7 +1127,7 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
         js.append(f"      tl.fromTo(\"#orule\", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.45, "
                   f"ease: \"power3.out\", immediateRender: false }}, {r(O + 0.55)});")
         text_in(O + 0.62, O + 0.9)
-        push(O + 0.6, 1.04)
+        push(O + 0.6, PUSH["impact"])
         fade_out(0.35)
         cue("rush", O, "osfx_rush")
         cue("slam", t_hit - 0.01, "osfx_slam")
@@ -1028,8 +1142,14 @@ def plan(cfg, media, aroll_end, beatmap=None, root=".", brand_path=None, quiet=F
             "hole": bool(hole), "face": [round(fx), round(fy)], "face_how": how,
             "circle": {"x": round(fcx), "y": round(fcy), "r": round(R0)},
             "land": {"x": round(land_x, 1), "y": round(land_y, 1), "r": round(land_r, 1)},
-            "logo_box": [round(lx), round(ly), round(lx + lw), round(ly + lh)],
-            "voice_ref_lufs": voice_ref}
+            "logo_box": [round(lx, 2), round(ly, 2), round(lx + lw, 2), round(ly + lh, 2)],
+            "lane": [round(lane[0], 2), round(lane[0] + lane[1], 2)],
+            "centre_x": round(cxs, 2), "voice_ref_lufs": voice_ref}
+    if dup:
+        info["warnings"] = [dup]
+    bad = centring_problems(info["logo_box"], lane, PUSH[style])
+    if bad:
+        sys.exit(f"outro ({style}): " + "; ".join(bad))
     if style == "portal":
         # what `preview --render` needs to PROVE the circle drew (check_circle_render)
         info["circle_close"] = {
@@ -1058,10 +1178,30 @@ GATE_DOOR_K = 1.95          # door width = 1.95 face widths (the reference: 540 
 GATE_ORBS = 7
 # The background the logo sits on in the gate: the last frame, blurred and dimmed ~90 %.
 GATE_BG = "#10161c"
-# The cue the sound pipeline places from its own library (scripts/sfx.py), with the
-# reference base volumes; the outro's synthesised stand-ins play until it does.
+# The gate's three cues: (library name, time after O, reference base volume, the
+# synthesised stand-in and level class). The outro plays the LIBRARY file itself when it
+# exists (library_cue) and the stand-in only when it does not — one sound per beat, never
+# both, and no separate sound step has to remember to place or drop anything.
 GATE_CUES = (("soft_whoosh", 0.05, 0.30, "page"), ("portal_suck", 1.12, 0.30, "rush"),
              ("logo_sting", 1.70, 0.26, "shimmer"))
+
+
+def library_cue(name, sfx_dir, root="."):
+    """(src as the page references it, absolute path, where) of a library cue, or None.
+
+    The project's own audio.sfx_dir first (sfx.py writes the library there, custom
+    regenerations included), then the skill's assets/sfx — copied into the project, since
+    the composition can only reference files under its own folder."""
+    src = os.path.join(sfx_dir, f"{name}.wav")
+    full = src if os.path.isabs(src) else os.path.join(root, src)
+    if os.path.exists(full) and os.path.getsize(full) > 1000:
+        return src, full, "project library"
+    skill = os.path.join(hfcfg.SKILL_DIR, "assets", "sfx", f"{name}.wav")
+    if os.path.exists(skill) and os.path.getsize(skill) > 1000:
+        os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+        shutil.copy2(skill, full)
+        return src, full, "skill library (copied into the project)"
+    return None
 
 
 def gate_available(lg, any_shape=False):
@@ -1076,16 +1216,22 @@ def gate_available(lg, any_shape=False):
 
 
 def _face_of(o, W, H):
-    """(x, y, width) from one framing record, in composition px. Accepts {cx,cy,w},
-    {x,y,w|width}, [x, y(, w)], and normalised 0-1 values."""
+    """(x, y, width) from one framing record, in composition px. Accepts framing_map.py's
+    own {face_cx, face_cy, face_w} (top level and per sample), {cx,cy,w}, {x,y,w|width},
+    [x, y(, w)], and normalised 0-1 values.
+
+    WHY face_cx first: framing_map.py writes face_cx / face_cy / face_w, and this reader
+    only knew cx / x — it could not read the map the pipeline itself writes, and the gate
+    silently fell back to its own skin mask (a test project only worked because its map
+    had been hand-written with an extra "face" key)."""
     if o is None:
         return None
     if isinstance(o, (list, tuple)) and len(o) >= 2:
         x, y, w = float(o[0]), float(o[1]), float(o[2]) if len(o) > 2 else 0.0
     elif isinstance(o, dict):
-        x = o.get("cx", o.get("x"))
-        y = o.get("cy", o.get("y"))
-        w = o.get("w", o.get("width", o.get("face_w", 0)))
+        x = o.get("face_cx", o.get("cx", o.get("x")))
+        y = o.get("face_cy", o.get("cy", o.get("y")))
+        w = o.get("face_w", o.get("w", o.get("width", 0)))
         if x is None or y is None:
             return None
         x, y, w = float(x), float(y), float(w or 0)
@@ -1109,13 +1255,27 @@ def read_framing(path, t_end, W, H):
     except (OSError, ValueError):
         return None
     if isinstance(d, dict):
+        # the door goes around the face as it is at the END of the A-roll: the measured
+        # sample nearest the end (framing_map.py drops implausible samples' face keys, so
+        # only real readings qualify), else the take's median at the top level. A map
+        # whose face is a fallback default is not a measurement: measure instead.
+        if "face_cx" in (d.get("fallback") or []):
+            return None
         for k in ("samples", "frames", "faces", "timeline"):
             seq = d.get(k)
             if isinstance(seq, list) and seq and isinstance(seq[0], dict):
-                best = min(seq, key=lambda s: abs(float(s.get("t", s.get("time", 0))) - t_end))
-                f = _face_of(best.get("face", best), W, H)
-                if f:
+                got = [(abs(float(s.get("t", s.get("time", 0))) - t_end),
+                        _face_of(s.get("face", s), W, H)) for s in seq]
+                got = [x for x in got if x[1]]
+                if got:
+                    f = min(got, key=lambda x: x[0])[1]
+                    if not f[2] and d.get("face_w"):
+                        f = (f[0], f[1], float(d["face_w"]))
                     return f
+        if d.get("face_cx") is not None:
+            f = _face_of(d, W, H)
+            if f:
+                return f
         if "face" in d:
             f = _face_of(d["face"], W, H)
             if f:
@@ -1159,7 +1319,9 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
     timeline and sound — all in composition px. Runs with cwd = the project root."""
     r = lambda v: round(float(v), 3)
     gx0, gy0, gx1, gy1 = g["safe"]
-    cxs = g["center_x"]
+    lane = centre_lane(g, W)              # (140, 800) on Reels
+    cxs = lane[0] + lane[1] / 2.0         # the FRAME centre, x 540
+    fit_w = lane[1] / PUSH["gate"]        # widest lockup that still fits after the push
     lg = brand["logo"]
     mk = lg["mark"]
     op = mk["opening"]
@@ -1182,33 +1344,38 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
         lw, lh = max_h * asp, max_h
     sc = lw / cw
     if float(op["w"]) * sc < GATE_MIN_OPEN:
-        grow = min(GATE_MIN_OPEN / (float(op["w"]) * sc), (gx1 - gx0 - 60) / lw,
+        grow = min(GATE_MIN_OPEN / (float(op["w"]) * sc), fit_w / lw,
                    (GATE_MAX_H + 140) / lh)
         lw, lh, sc = lw * grow, lh * grow, sc * grow
+    # Centred on the FRAME centre, never shifted: a lockup wider than the lane (after the
+    # push) is SCALED DOWN until it fits centred. Every coordinate below — the landing,
+    # the orbs' sink target, the words — is derived from this box, so the door lands on
+    # the mark where it is.
+    shrink = min(1.0, fit_w / lw)
+    if shrink < 1.0:
+        lw, lh, sc = lw * shrink, lh * shrink, sc * shrink
+        say(f"gate  lockup scaled to {shrink:.0%} to fit centred inside x "
+            f"{lane[0]:.0f}-{lane[0] + lane[1]:.0f}")
     tagline = (st.get("tagline") or "").strip()
+    handle = (st.get("handle") or "").strip()
     words = tagline.split()
     tfs = 0
     if words:
+        # one line in the centred lane: the size comes down until it fits
         n = len(tagline)
-        tfs = int(max(34, min(62, (gx1 - gx0 - 60) / (0.5 * n))))
-        if 0.5 * n * 34 > gx1 - gx0 - 20:
-            say(f"tagline is {n} chars — too long for one line inside the safe zone; "
-                f"shorten it (≤ ~45 chars)")
+        tfs = int(max(22, min(62, (fit_w - 40) / (0.5 * n))))
+        if tfs < 34:
+            say(f"tagline is {n} chars — {tfs}px to fit one centred line; shorten it "
+                f"(≤ ~45 chars)")
+    hfs = int(max(22, min(34, (fit_w - 40) / (0.62 * max(1, len(handle)))))) if handle else 0
     tag_gap = round(0.62 * tfs) if words else 0
-    block_below = (tag_gap + round(1.2 * tfs)) if words else 0
+    hand_gap = (round(0.45 * tfs) if words else 30) if handle else 0
+    block_below = ((tag_gap + round(1.2 * tfs)) if words else 0) + \
+        ((hand_gap + round(1.25 * hfs)) if handle else 0)
     cy = float(st.get("center_y", 860))
     ly = cy - lh / 2
     ly = max(gy0 + 40, min(ly, gy1 - 40 - lh - block_below))
     lx = cxs - lw / 2
-    # Grid shift: a lockup that pokes into the right rail (or past the left margin) moves
-    # as ONE piece — every coordinate below is derived after the shift, so the door's
-    # landing, the orbs' sink target and the words all move with it.
-    dx = 0.0
-    if lx + lw > gx1 - 12:
-        dx = (gx1 - 12) - (lx + lw)
-    if lx + dx < gx0 + 12:
-        dx = (gx0 + 12) - lx
-    lx += dx
 
     def S(x, y):
         return lx + (float(x) - c0x) * sc, ly + (float(y) - c0y) * sc
@@ -1236,7 +1403,8 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
     # ------------------------------------------------------------- the door
     fr = st.get("face")
     if fr:
-        fx, fy, fw, how = float(fr[0]), float(fr[1]), 0.0, "config"
+        fx, fy, fw = float(fr[0]), float(fr[1]), float(fr[2]) if len(fr) > 2 else 0.0
+        how = st.get("_face_how", "config")
     else:
         got = read_framing(os.path.join("build", "framing.json"), aroll_end, W, H)
         if got:
@@ -1280,7 +1448,7 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
     say(f"gate  start {O:.2f}s → end {E:.2f}s  mark {shape} ({mk.get('how')}), "
         f"face {fx:.0f},{fy:.0f} ({how}); door {Dw:.0f}x{Dh:.0f} at {Ld:.0f},{T:.0f} → "
         f"{Lw:.1f}x{Lh:.1f} at {Lx:.1f},{Ly:.1f} (s {s1:.4f}, t {tx:.1f},{ty:.1f})"
-        + (f"; grid shift {dx:+.0f}px" if dx else ""))
+        + f"; lockup x {lx:.1f}-{lx + lw:.1f} (centre {cxs:.0f})")
 
     # --------------------------------------------------------------- files
     freeze = extract_last_frame(aroll, "assets/outro_last.png", W, H)
@@ -1394,10 +1562,13 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
                  f'height="{r(mh + 2 * pad)}" viewBox="{vb}" '
                  f'style="left:{r(mx - pad)}px;top:{r(my - pad)}px">{mask}{img}</svg>')
     tg_y = ly + lh + tag_gap
+    hd_y = (tg_y + round(1.2 * tfs) + hand_gap) if words else (ly + lh + hand_gap)
     if words:
         spans = " ".join(f'<span id="og-tw{i}" class="og-tw {"og-tw1" if i == 0 else "og-tw2"}">'
                          f'{_esc(w_)}</span>' for i, w_ in enumerate(words))
         inner.append(f'<div id="og-tag">{spans}</div>')
+    if handle:
+        inner.append(f'<div id="og-handle"><span>{_esc(handle)}</span></div>')
     orbs = _gate_orbs((Ld, T, W - Rd, H - Bd), gx0, gy0, gx1, gy1, light)
     for i, (ox_, oy_, d, c) in enumerate(orbs):
         inner.append(f'<i id="og-orb{i}" class="og-orb" data-grid="bleed" style="left:{r(ox_ - d / 2)}px;'
@@ -1421,11 +1592,12 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
     css = string.Template(open(os.path.join(TEMPLATE_DIR, "gate.css"),
                                encoding="utf-8").read()).substitute(
         W=W, H=H, bgw=W + 120, bgh=H + 120, dim_x=face_pct[0], dim_y=face_pct[1],
-        push_ox=r(sink[0]), push_oy=r(sink[1]),
+        push_ox=r(cxs), push_oy=r(sink[1]),
         fl_x=r(sink[0] - fl_d / 2), fl_y=r(sink[1] - fl_d / 2), fl_d=r(fl_d),
         light_rgb=light_rgb, li_x=r(li_x), li_y=r(li_y), li_w=r(li_w), li_h=r(li_h),
-        li_r=li_r, mark_extra=mark_extra, tg_x=gx0, tg_w=gx1 - gx0, tg_y=r(tg_y),
-        dir=lang_dir, tfs=tfs, tag_light=_mix(light, "#ffffff", 0.45))
+        li_r=li_r, mark_extra=mark_extra, tg_x=r(lane[0]), tg_w=r(lane[1]), tg_y=r(tg_y),
+        dir=lang_dir, tfs=tfs, tag_light=_mix(light, "#ffffff", 0.45),
+        hd_y=r(hd_y), hfs=hfs, hd_color=col.get("hl_on_dark") or light)
 
     # ------------------------------------------------------------------- js
     L = lambda t: r(O + t)
@@ -1503,27 +1675,48 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
         js.append(f"      tl.fromTo(\"#og-tw{i}\", {{ opacity: 0.18, filter: \"blur(6px) grayscale(1)\" }}, "
                   f"{{ opacity: 1, filter: \"blur(0px) grayscale(0)\", duration: 0.22, "
                   f"ease: \"power2.out\", immediateRender: false }}, {r(O + 2.12 + step * i)});")
-    # 9. slow push on the opening, fade to black
-    js.append(f"      tl.fromTo(\"#og-in\", {{ scale: 1 }}, {{ scale: 1.045, duration: {r(E - O - 1.4)}, "
-              f"ease: \"none\", immediateRender: false }}, {L(1.4)});")
+    if handle:
+        t_h = O + 2.12 + (step * len(words) + 0.1 if words else 0.0)
+        js.append(f"      tl.fromTo(\"#og-handle\", {{ opacity: 0, y: 12 }}, {{ opacity: 1, y: 0, "
+                  f"duration: 0.5, ease: \"power2.out\", immediateRender: false }}, {r(t_h)});")
+    # 9. slow push, pivoting on the FRAME centre (x) at the opening's height — so the
+    # lockup stays centred to the last frame — and the footage in the doorway follows it
+    # (follow_push) so the door stays inside the opening. Starts when the flight ends.
+    PG = PUSH["gate"]
+    js.append(f"      tl.fromTo(\"#og-in\", {{ scale: 1 }}, {{ scale: {PG}, duration: {r(E - O - 1.42)}, "
+              f"ease: \"none\", immediateRender: false }}, {L(1.42)});")
+    fx_, fy_, fs_ = follow_push((dcx, dcy), (tx, ty), s1, (cxs, sink[1]), PG)
+    js.append(f"      tl.fromTo({FOOT}, {{ x: {r(tx)}, y: {r(ty)}, scale: {round(s1, 5)} }}, "
+              f"{{ x: {r(fx_)}, y: {r(fy_)}, scale: {round(fs_, 5)}, duration: {r(E - O - 1.42)}, "
+              f"ease: \"none\", immediateRender: false }}, {L(1.42)});")
+    # fade to black
     js.append(f"      tl.fromTo(\"#og-fade\", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.4, "
               f"ease: \"power1.in\", immediateRender: false }}, {r(E - 0.4 - F)});")
 
     # ---------------------------------------------------------------- sound
-    # Cues for the sound pipeline (scripts/sfx.py places them from its library, scaled to
-    # the voice; exempt = deliberate beats that stay on the frame, not slid off words),
-    # plus synthesised stand-ins so the outro is never silent until it does.
+    # One sound per beat: the library cue itself when the project (or the skill) has it,
+    # else the outro's own synthesised stand-in. Both are levelled the same way — by where
+    # their own peak lands against the voice (cue_volume) — so swapping one for the other
+    # never changes how loud the beat is. Do NOT also place these cues with sfx.py:
+    # preflight_qa.py fails an outro cue that plays twice.
     cues, sfx = [], []
     for name, t, base, synth in GATE_CUES:
+        lib = library_cue(name, sfx_dir, root)
+        if lib:
+            path, full_, where = lib
+            cid = f"osfx_{name}"
+        else:
+            path = os.path.join(sfx_dir, f"outro_{synth}.wav")
+            full_ = path if os.path.isabs(path) else os.path.join(root, path)
+            where, cid = "synthesised stand-in (no library file)", f"osfx_{synth}"
         cues.append({"name": name, "t": r(O + t), "base_vol": base, "exempt": True,
-                     "stand_in": f"osfx_{synth}"})
-        path = os.path.join(sfx_dir, f"outro_{synth}.wav")
-        full_ = path if os.path.isabs(path) else os.path.join(root, path)
+                     "plays": cid, "source": where})
         dur = min(wav_duration(full_), E - (O + t))
         if dur > 0.05:
-            sfx.append({"id": f"osfx_{synth}", "src": path, "start": r(O + t),
+            sfx.append({"id": cid, "src": path, "start": r(O + t),
                         "duration": r(dur), "volume": cue_volume(cfg, voice_ref, synth, full_),
                         "cue": name})
+    say("gate  sound: " + ", ".join(f"{c['name']} ← {c['source']}" for c in cues))
 
     info = {"style": "gate", "mark": shape, "mark_how": mk.get("how"),
             "mark_variant": mark_var, "words": {k: v["var"] for k, v in parts.items()},
@@ -1533,11 +1726,17 @@ def _plan_gate(cfg, st, brand, col, aroll, aroll_end, O, E, F, fz0, s0, y0, g, W
             "land": {"x": r(Lx), "y": r(Ly), "w": r(Lw), "h": r(Lh), "scale": round(s1, 5),
                      "tx": r(tx), "ty": r(ty)},
             "opening_screen": {"cx": r(ocx), "top": r(otop), "w": r(ow), "h": r(oh)},
-            "logo_box": [round(lx), round(ly), round(lx + lw), round(ly + lh)],
-            "grid_shift": r(dx), "tagline_top": r(tg_y) if words else None,
+            "logo_box": [round(lx, 2), round(ly, 2), round(lx + lw, 2), round(ly + lh, 2)],
+            "lane": [r(lane[0]), r(lane[0] + lane[1])], "centre_x": r(cxs),
+            "scaled": round(shrink, 4),
+            "tagline_top": r(tg_y) if words else None, "handle_top": r(hd_y) if handle else None,
             "voice_ref_lufs": voice_ref,
-            # also here so build/outro.json (written from info) carries them to sfx.py
+            # a RECORD of what the outro plays (build/outro.json) — preflight_qa.py reads it
+            # to fail a cue placed twice; nothing should place these again
             "cues": cues}
+    bad = centring_problems(info["logo_box"], lane, PG)
+    if bad:
+        sys.exit("outro (gate): " + "; ".join(bad))
     check_tween_strings(js, "outro (gate)")
     return {"style": "gate", "start": O, "end": E, "aroll_end": round(aroll_end, 3),
             "freeze_start": fz0, "elements": els, "css": css, "js": js, "sfx": sfx,
@@ -1768,8 +1967,10 @@ def check_circle_render(mp4, cc, W, H, say=print):
 
 
 def selftest():
-    """Negative tests for the two outro gates — run `outro.py selftest`. Exit 1 on any
-    failure. No render needed: the circle check runs on synthetic frames."""
+    """Negative tests for the outro gates — run `outro.py selftest`: tweened strings,
+    centring on the frame, the push-follow math, reading framing_map.py's own output, the
+    tagline-duplication warning, the library-cue choice, the circle pixel check. Exit 1 on
+    any failure. No render needed: the circle check runs on synthetic frames."""
     fails = []
 
     def expect(cond, what):
@@ -1793,6 +1994,70 @@ def selftest():
         "accepts canonical circle / inset / filter strings")
     expect(cssn(340.0) == "340" and cssn(0.5) == "0.5" and cssn(-0.0) == "0"
            and cssn(117.4789) == "117.479", "cssn writes numbers the way JS prints them")
+
+    # centring (the owner's note: the logo was not centred)
+    g = grid.profile("reels")
+    lane = centre_lane(g, 1080)
+    expect(abs(lane[0] + lane[1] / 2 - 540) < 0.01 and lane[1] <= 800,
+           f"the lane is centred on the FRAME (x 540), {lane[1]:.0f} px wide")
+    expect(not centring_problems([240, 0, 840, 10], lane, 1.045),
+           "a 600 px lockup on x 240-840 passes")
+    expect(centring_problems([200, 0, 800, 10], lane, 1.045),
+           "a lockup centred on the safe-zone centre x 500 FAILS")
+    expect(centring_problems([140, 0, 940, 10], lane, 1.045),
+           "an 800 px lockup that the push grows past the lane FAILS (scale it down)")
+    # follow_push: a point on the footage lands where the pushed lockup puts it
+    o, t, s1, P, k = (575.0, 888.0), (-73.8, -141.0), 0.352, (540.0, 750.0), 1.045
+    fx_, fy_, fs_ = follow_push(o, t, s1, P, k)
+    p_ = (500.0, 600.0)
+    q = (o[0] + (p_[0] - o[0]) * s1 + t[0], o[1] + (p_[1] - o[1]) * s1 + t[1])
+    want = (P[0] + (q[0] - P[0]) * k, P[1] + (q[1] - P[1]) * k)
+    got = (o[0] + (p_[0] - o[0]) * fs_ + fx_, o[1] + (p_[1] - o[1]) * fs_ + fy_)
+    expect(abs(got[0] - want[0]) < 1e-6 and abs(got[1] - want[1]) < 1e-6,
+           "follow_push keeps the door glued to the pushed opening")
+    # read_framing reads framing_map.py's OWN output (face_cx / face_cy / face_w)
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="outro_selftest_")
+    fj = os.path.join(tmp, "framing.json")
+    json.dump({"face_cx": 568, "face_cy": 879, "face_w": 280, "chin": 1168,
+               "samples": [{"t": 0.5, "face_cx": 560, "face_cy": 870, "face_w": 284},
+                           {"t": 30.0, "skin_top": 700},
+                           {"t": 55.0, "face_cx": 564, "face_cy": 886, "face_w": 280}]},
+              open(fj, "w"))
+    f = read_framing(fj, 55.5, 1080, 1920)
+    expect(f == (564.0, 886.0, 280.0), f"framing_map's face_cx/face_cy/face_w are read ({f})")
+    f = read_framing(fj, 31.0, 1080, 1920)
+    expect(f is not None and f[0] in (560.0, 564.0),
+           "a sample without a face is skipped, not returned")
+    json.dump({"face_cx": 540, "face_cy": 860, "face_w": 280, "fallback": ["face_cx"]},
+              open(fj, "w"))
+    expect(read_framing(fj, 10, 1080, 1920) is None,
+           "a FALLBACK face is not a measurement (the outro measures instead)")
+    json.dump({"face": {"cx": 575, "cy": 888, "w": 290}}, open(fj, "w"))
+    expect(read_framing(fj, 10, 1080, 1920) == (575.0, 888.0, 290.0),
+           "the hand-written {face: {cx, cy, w}} form still reads")
+    # tagline duplication
+    stacked = {"logo": {"mark": {"parts": {"below": {"x": 0}}}}}
+    expect(tagline_duplication(stacked, "שורה כלשהי") is not None,
+           "a tagline under a logo with text under its mark warns")
+    expect(tagline_duplication(stacked, "") is None, "no tagline, no warning")
+    side = {"logo": {"mark": {"parts": {"right": {"x": 0}}}}}
+    expect(tagline_duplication(side, "a slogan") is None,
+           "a wordmark BESIDE the mark plus a tagline is normal (no warning)")
+    rec = {"logo": {"text": "Acme Labs", "mark": {"parts": {"below": {"x": 0}}}}}
+    expect("Acme labs" in (tagline_duplication(rec, "Acme labs for you") or ""),
+           "recorded logo text names the repeated words")
+    expect(tagline_duplication(rec, "build faster") is None,
+           "recorded logo text with no shared word does not warn")
+    # library cue: the project file wins, the skill file is copied in, else None
+    sd = os.path.join(tmp, "sfx")
+    os.makedirs(sd)
+    expect(library_cue("no_such_cue_xyz", "sfx", tmp) is None, "a missing cue → stand-in")
+    with open(os.path.join(sd, "soft_whoosh.wav"), "wb") as fh:
+        fh.write(b"\0" * 2000)
+    got = library_cue("soft_whoosh", "sfx", tmp)
+    expect(got is not None and got[2] == "project library", "the project's library file is used")
+    shutil.rmtree(tmp, ignore_errors=True)
 
     # circle pixel check on synthetic frames (paper background, a bright footage)
     W, H, k = 1080, 1920, CHECK_SCALE
@@ -1992,6 +2257,13 @@ def preview(a):
         v = getattr(a, k, None)
         if v:
             ocfg["outro"][k] = v
+    # the face: the PROJECT's framing map at the real A-roll's end (the bench's 1.6 s clip
+    # has other timestamps), so the preview's door matches the build's
+    if not ocfg["outro"].get("face") and a.aroll and os.path.exists(a.aroll):
+        f = read_framing(os.path.join(proj, "build", "framing.json"), media_duration(a.aroll), W, H)
+        if f:
+            ocfg["outro"]["face"] = [round(f[0], 1), round(f[1], 1), round(f[2], 1)]
+            ocfg["outro"]["_face_how"] = "the project's build/framing.json"
     ocfg["audio"] = dict(cfg.get("audio", {}))
     ocfg["audio"]["sfx_dir"] = "assets/sfx"
     ocfg["brand"] = dict(cfg["brand"])
@@ -2000,7 +2272,7 @@ def preview(a):
     # the bench's A-roll sits in the beat map's full-screen state, like a real reel's end
     p = plan(ocfg, media, aroll_end, None, root=out, state=(1.02, 0.0))
     if p.get("cues"):
-        print("  cues for the sound pipeline: " +
+        print("  outro cues (played by the outro itself — do not place them again): " +
               ", ".join(f"{c['name']} @{c['t']}" for c in p["cues"]))
     body = [f'      <video id="aroll" class="clip" src="assets/aroll.mp4" data-start="0" '
             f'data-duration="{aroll_end}" data-track-index="1" playsinline data-has-audio="true"></video>']

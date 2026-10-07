@@ -6,7 +6,8 @@
                          hand-off from live video to still cannot jump.
            #owipe    23  the line style's hairline.
            #olock    72  the lockup: logo, disc, rule, tagline, handle. Above the face circle,
-                         so the logo's ink covers the circle's edge inside the hole.
+                         so the logo's ink covers the circle's edge inside the hole. Everything
+                         in it is centred on the FRAME centre (x 540) and the push pivots there.
            #ofade    74  the last fade to the background colour.
          Nothing here sets a CSS transform on an element GSAP tweens (lint:
          gsap_css_transform_conflict) — initial states live in the timeline. */

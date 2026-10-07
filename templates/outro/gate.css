@@ -7,7 +7,9 @@
            #og-bg     19  blurred, darkened copy of the last frame. UNDER #aroll (20), so
                           the closing door reveals it around the speaker.
            #ofreeze   21  the A-roll's last frame (same box + origin as #aroll).
-           #og-lock   72  flash, doorway light, words, mark, tagline, orbs.
+           #og-lock   72  flash, doorway light, words, mark, tagline, handle, orbs. Its inner
+                          #og-in pushes 1 → 1.045 pivoting on the FRAME centre (x 540), so
+                          the lockup — centred on x 540 — stays centred to the last frame.
            #og-fade   74  the last fade to black.
          Nothing here sets a CSS transform on an element GSAP tweens
          (lint: gsap_css_transform_conflict). Initial hidden states live HERE (opacity 0),
@@ -49,6 +51,14 @@
       .og-tw { display: inline-block; opacity: 0; }
       .og-tw1 { font-weight: 700; color: #ffffff; }
       .og-tw2 { font-weight: 300; color: ${tag_light}; }
+      /* the handle under the tagline: LTR-isolated inside an RTL page, centred in the same
+         lane (x 140-940 on Reels) so the whole lockup sits on the frame centre */
+      #og-handle { position: absolute; left: ${tg_x}px; width: ${tg_w}px; top: ${hd_y}px;
+                   text-align: center; white-space: nowrap; opacity: 0;
+                   font-family: var(--brand-font), "Heebo", sans-serif; font-size: ${hfs}px;
+                   font-weight: 600; line-height: 1.25; letter-spacing: 0.06em;
+                   color: ${hd_color}; }
+      #og-handle span { display: inline-block; direction: ltr; unicode-bidi: isolate; }
       /* orbs: a solid colour plus a box-shadow glow, NOT a radial gradient — dozens of
          gradient/blur/clip layers make the capture render black (references/hyperframes.md) */
       .og-orb { position: absolute; border-radius: 50%; opacity: 0; }
