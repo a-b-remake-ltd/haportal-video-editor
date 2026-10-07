@@ -447,6 +447,58 @@ def place_sfx(t, kind, words):
     return t, 1.0, ""
 
 
+_AUDIBLE = {}
+
+
+def audible_end(full):
+    """Seconds until the cue's level falls 30 dB under its peak (20 ms windows). A generated
+    impact or whoosh rings for ~1 s after its start: the START can sit in a gap while the
+    TAIL covers the next words — that is what swallowed "ותתחילו לבנות" in a test master."""
+    if full in _AUDIBLE:
+        return _AUDIBLE[full]
+    import array
+    r = hfcfg.run(["ffmpeg", "-v", "error", "-i", full, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                  capture_output=True, text=False)
+    a = array.array("h")
+    a.frombytes(r.stdout[: len(r.stdout) // 2 * 2])
+    n = 160
+    rms = [(sum(x * x for x in a[i:i + n]) / float(n)) ** 0.5 for i in range(0, len(a) - n + 1, n)]
+    if not rms:
+        _AUDIBLE[full] = 0.0
+        return 0.0
+    floor = max(rms) * 10 ** (-30 / 20.0)
+    last = max((i for i, v in enumerate(rms) if v > floor), default=0)
+    _AUDIBLE[full] = (last + 1) * n / 8000.0
+    return _AUDIBLE[full]
+
+
+def fit_tail(full, rel, t, dur, words, root):
+    """Shorten a cue whose audible tail would cover the next spoken word: cut it 0.06 s into
+    that word with a 0.08 s fade (a baked copy in assets/sfx/_fit/), so the transient stays
+    and the words stay clear. Returns (rel, dur, note, volume factor)."""
+    tail = t + min(dur, audible_end(full))
+    nxt = next((ws for ws, we, w in words if ws > t + 0.06), None)
+    if nxt is None or tail <= nxt + 0.08:
+        return rel, dur, "", 1.0
+    keep = round(max(0.12, nxt + 0.06 - t), 3)
+    if keep >= dur - 0.02:
+        return rel, dur, "", 1.0
+    # A riser IS its build-up (cutting it leaves a click), and a cue cut to a sliver of its
+    # sound is no longer that sound: those stay whole and play under the speech at half level.
+    if "riser" in os.path.basename(full) or keep < 0.35 * min(dur, audible_end(full)):
+        return rel, dur, f"kept whole at half level (it rings under the word at {nxt:.2f}s)", 0.5
+    base = os.path.splitext(os.path.basename(full))[0]
+    out_rel = os.path.join("assets", "sfx", "_fit", f"{base}_{int(keep * 1000)}.wav")
+    out = os.path.join(root, out_rel)
+    if not os.path.exists(out):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        hfcfg.run(["ffmpeg", "-v", "error", "-y", "-i", full, "-t", f"{keep:.3f}", "-af",
+                   f"afade=t=out:st={max(0.0, keep - 0.08):.3f}:d=0.08", out])
+    if not os.path.exists(out):
+        return rel, dur, "", 1.0
+    return out_rel, keep, f"tail cut to {keep:.2f}s (it rang into the next word at {nxt:.2f}s)", 1.0
+
+
 # ========================================================================= plan
 def plan(cfg, media, end, beatmap=None, bounds=(), root=".", quiet=False):
     """Everything build_index.py needs for the `# scenes` section, or None when the project
@@ -523,6 +575,10 @@ def plan(cfg, media, end, beatmap=None, bounds=(), root=".", quiet=False):
                 dur = min(dur, end - t)
             if t < 0 or dur <= 0.05:
                 continue
+            rel, dur, tnote, tk = fit_tail(full, rel, t, dur, ctx.words, root)
+            kv *= tk
+            if tnote:
+                moved.append(f"{f['id']} {c['name']} {tnote}")
             vol = round(max(0.01, min(1.0, float(c.get("base_vol", 0.2)) * K * kv)), 4)
             sfx.append({"id": f"{f['id']}-x{len(sfx)}", "src": rel, "start": r3(t), "duration": r3(dur),
                         "volume": vol, "lane": len(sfx) % 6, "name": c["name"], "kind": c.get("kind")})

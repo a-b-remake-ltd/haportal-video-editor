@@ -581,6 +581,37 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
         # mishears the clean A-roll itself is listed apart, as noise.
         pct, diffs, noise_ma = intelligibility_split(ref, toks(base), got)
         vs = "the clean A-roll (both machine transcripts)"
+        # A whole-video transcript is not stable from run to run: the engine sometimes skips
+        # a stretch (an opening under music) or hears a word one way in one file and another
+        # way in the other. Every suspected master problem is therefore re-transcribed
+        # IN ISOLATION (±1 s) in BOTH files; only a difference that survives that is a mix
+        # problem — the words the A-roll has there are all heard in the isolated master, or
+        # the two isolated transcripts agree. In a real test the engine heard "הכלא" in the
+        # master and "הכאלה" in the clean A-roll on one run, and the reverse on the next.
+        if diffs:
+            confirmed, cleared = [], []
+            for row in diffs:
+                t0, t1 = row[0], row[1]
+                a0, b0 = max(0.0, t0 - 1.0), min(speech_end, t1 + 1.0)
+                m_ = _span_tokens(render, a0, b0, gl, here)
+                r_ = _span_tokens(aroll, a0, b0, gl, here)
+                # the clip's first/last word can be cut mid-word ("יתערב" → "י"): compare
+                # the inside of the span
+                inner = lambda x: x[1:-1] if len(x) > 3 else x
+                want = [w.lower() for w in re.findall(r"[\w\u0590-\u05ff]+", row[2])]
+                from collections import Counter
+                present = bool(want) and m_ is not None and \
+                    not (Counter(want) - Counter(m_))     # every A-roll word is in the master
+                same = m_ is not None and r_ is not None and inner(m_) == inner(r_)
+                if present or same:
+                    cleared.append(row)
+                else:
+                    confirmed.append(row)
+            if cleared:
+                noise_ma = list(noise_ma) + cleared
+                lost = sum(max(len(r[2].split()), len(r[3].split())) for r in cleared)
+                pct = min(1.0, pct + lost / max(1, len(toks(base))))
+            diffs = confirmed
         _, diffs_aw = score(ref, toks(base))
         noise_lines = [f"[{t:6.2f}] '{a_ or '∅'}' → '{b_ or '∅'}'" for t, _, a_, b_ in diffs_aw[:12]]
         noise_lines += [f"[{t:6.2f}] master '{b_ or '∅'}' matches words.json; the A-roll "
@@ -602,6 +633,14 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
         warns.append("transcriber noise — the engine mishears the CLEAN A-roll the same way, so "
                      "these are NOT master problems (no SFX to move; check the captions say "
                      "the intended words):\n      " + "\n      ".join(noise_lines))
+    # A word that is GONE from the master (confirmed in isolation) fails whatever the
+    # percentage: two lost words out of 140 still score 98.6 %, and they were the turn line.
+    gone = [r for r in diffs if r[2].strip() and not r[3].strip()]
+    if gone and base:
+        issues.append("WORDS MISSING FROM THE MASTER (confirmed by an isolated re-transcription): "
+                      + "; ".join(f"{r[0]:.2f}-{r[1]:.2f}s '{r[2]}'" for r in gone[:6])
+                      + " — an SFX or a music hit covers them: cut the cue's tail, move it, "
+                        "or deepen the duck")
     if pct < threshold:
         issues.append(f"INTELLIGIBILITY BELOW {100 * threshold:.0f} % — " + msg
                       + " — move the SFX off these words or deepen the duck:\n      "
@@ -612,6 +651,24 @@ def check_intelligibility(cfg, render, transcript, aroll=None, threshold=0.97):
             warns.append("words heard differently in the master (check the SFX near each):\n      "
                          + "\n      ".join(lines))
     mark(11, pct >= threshold, f"{100 * pct:.1f} %")
+
+
+def _span_tokens(src, a, b, glossary, here):
+    """Normalised words of src[a:b] from an isolated transcription (None on failure)."""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="intel_")
+    out = os.path.join(d, "w.json")
+    cmd = [sys.executable, os.path.join(here, "transcribe.py"), src, "--start", f"{a:.2f}",
+           "--end", f"{b:.2f}", "--out", os.path.join(d, "t.json"), "--words", out,
+           "--flags", "", "--force"]
+    if glossary:
+        cmd += ["--glossary", glossary]
+    r = hfcfg.run(cmd)
+    if r.returncode or not os.path.exists(out):
+        return None
+    tok = re.compile(r"[\w\u0590-\u05ff]+", re.UNICODE)
+    return [t.lower() for _, _, w in json.load(open(out, encoding="utf-8"))
+            for t in tok.findall(str(w))]
 
 
 def intelligibility_split(words_t, aroll_t, master_t):
@@ -652,8 +709,11 @@ def intelligibility_split(words_t, aroll_t, master_t):
             mstr = "".join(x[0] for x in m_)
             astr = "".join(x[0] for x in a_)
             row = (t0, t1, " ".join(x[0] for x in a_), " ".join(x[0] for x in m_))
-            if (mstr and mstr in near) or (not mstr and astr and astr not in near):
-                noise.append(row)           # the master says what words.json says
+            if (mstr and mstr in near) or (not mstr and astr and astr not in near) \
+                    or (mstr and not astr):
+                # the master says what words.json says — or the master heard words the clean
+                # A-roll's transcript MISSED: a mix can only take speech away, never add it
+                noise.append(row)
             else:
                 problems.append(row)
                 errs += max(len(a_), len(m_))
