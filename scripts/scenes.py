@@ -615,10 +615,12 @@ def selftest():
     # sfx=: default, mute, rename, per-role, and the override
     s = ctx.scene("b1", 0.5, 2.0)
     s.add(k.bars(s, slam_t=ctx.t("הכלא")))
-    want("bars default slam 0.42", [c["base_vol"] for c in s._sfx if c.get("role") == "slam"] == [0.42])
+    want("bars default slam 0.16, 0.12 s before the word",
+         [(c["base_vol"], round(c["t"] - ctx.t("הכלא"), 3)) for c in s._sfx
+          if c.get("role") == "slam"] == [(0.16, -0.12)])
     s.sfx_override("bars", vol=0.14, dt=-0.12)
     c = [c for c in s._sfx if c.get("role") == "slam"][0]
-    want("sfx_override re-levels and moves", c["base_vol"] == 0.14 and abs(c["t"] - (ctx.t("הכלא") - 0.14)) < 1e-6, c)
+    want("sfx_override re-levels and moves", c["base_vol"] == 0.14 and abs(c["t"] - (ctx.t("הכלא") - 0.24)) < 1e-6, c)
     try:
         s.sfx_override("nope", vol=0.1)
         want("sfx_override on a missing cue is an error", False)
