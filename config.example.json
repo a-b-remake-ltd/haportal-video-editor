@@ -18,7 +18,7 @@
     "glossary": ["AI"],
     "typos": {},
     "merge_next": {},
-    "locked_phrases": [],
+    "locked_phrases": ["קלוד קוד", "Claude Code"],
     "clause_openers": [],
     "sticky_words": []
   },
@@ -71,6 +71,7 @@
   "cutting": {
     "onset_db": -26.0,
     "onset_rel_db": 12.0,
+    "floor_margin_db": 8.0,
     "speech_lead": 0.04,
     "gap_ratio": 0.60,
     "gap_min": 0.15,

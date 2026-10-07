@@ -47,7 +47,7 @@ DEFAULTS = {
     # Written by scripts/apply_style.py from an analysed reference; empty = house style.
     "style": {},
     "outro": {"enabled": False, "style": "portal", "tagline": "", "handle": ""},
-    "cutting": {"onset_db": -26.0, "onset_rel_db": 12.0, "soft_onset_lead": 0.10, "speech_lead": 0.04, "gap_ratio": 0.60,
+    "cutting": {"onset_db": -26.0, "onset_rel_db": 12.0, "floor_margin_db": 8.0, "soft_onset_lead": 0.10, "speech_lead": 0.04, "gap_ratio": 0.60,
                 "gap_min": 0.15, "gap_max": 0.32, "gap_topic_boundary": 0.26,
                 "lead": 0.06, "tail_min": 0.09, "tail_last": 0.45,
                 "fade_in": 0.02, "fade_out": 0.055, "drop": [], "merge": []},
