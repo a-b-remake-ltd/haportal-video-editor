@@ -210,15 +210,16 @@ def parse_lines(spec, default="thin"):
     return lines, times
 
 
-def word_html(text):
+def word_html(text, direction="rtl", hebrew=True):
     """One word, escaped, with a Latin run isolated in <bdi class="ltr"> — and "AI"-like
     acronyms also class "ai" (in a heavy Hebrew face a capital I has no serif and "AI" reads
-    "Al"). Verbatim: the Latin is never rewritten to dodge bidi, it is isolated instead."""
+    "Al"). Verbatim: the Latin is never rewritten to dodge bidi, it is isolated instead.
+    Only an RTL stack needs the isolation; the slab is Hebrew-only; an LTR word is plain."""
     m = LATIN.match(text)
-    if not m:
+    if not m or direction != "rtl":
         return _html.escape(text)
     pre, lat, post = m.groups()
-    cls = "ltr ai" if AI_LIKE.match(lat) else "ltr"
+    cls = "ltr ai" if hebrew and AI_LIKE.match(lat) else "ltr"
     return f'{_html.escape(pre)}<bdi class="{cls}">{_html.escape(lat)}</bdi>{_html.escape(post)}'
 
 
@@ -399,7 +400,7 @@ def word_times(words, trans, hl, lead, end_cap, bounds=()):
 MEASURE_PAGE = """<!doctype html><meta charset="utf-8"><style>
 {faces}
 body {{ margin:0; background:#000; }}
-.kh {{ position:absolute; right:0; top:0; direction:rtl; text-align:right; white-space:nowrap;
+.kh {{ position:absolute; {side}:0; top:0; direction:{dir}; text-align:{side}; white-space:nowrap;
       font-family:"{family}", "Inter", sans-serif; }}
 .kl {{ display:block; }} .kl.sm {{ font-size:{small}em; }}
 .kw {{ display:inline-block; }}
@@ -436,7 +437,7 @@ def _model_width(line, size):
     return w * size * (SMALL if line["small"] else 1.0)
 
 
-def measure(cfg, heads, family, workdir="build"):
+def measure(cfg, heads, family, workdir="build", direction="rtl"):
     """Measure every headline's lines and block height in the real face, headless Chrome —
     the same method as fit_captions.py. Returns {id: {"lines": [px], "height": px}}."""
     import fonts
@@ -452,7 +453,8 @@ def measure(cfg, heads, family, workdir="build"):
         print(f"  ! kinetic: cannot measure in Chrome ({e}) — using the char-width model")
         return None
     page = MEASURE_PAGE.format(faces=faces, family=family, small=SMALL,
-                               heads=json.dumps(heads, ensure_ascii=False))
+                               heads=json.dumps(heads, ensure_ascii=False), dir=direction,
+                               side="right" if direction == "rtl" else "left")
     os.makedirs(workdir, exist_ok=True)
     tmp = os.path.abspath(os.path.join(workdir, "_kinetic_fit.html"))
     open(tmp, "w", encoding="utf-8").write(page)
@@ -492,8 +494,22 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
     k = H / 1920.0
     G = grid.from_config(cfg)
     gx0, gy0, gx1, gy1 = G["safe"]
+    # WHERE THE STACK HANGS (references/languages.md). RTL: flush RIGHT from the headline
+    # margin (x 920 on Reels), growing left to the safe edge (x 60). LTR: flush LEFT on the
+    # centred lane's left edge (x 140), growing right to x 940. Not the mirror (left 160):
+    # the like/comment rail makes x 940 the hard right limit, so an LTR line can only grow
+    # to it — x 140 gives the widest line the same 800 px the centred lane allows, keeps the
+    # left margin equal to the gap the rail leaves on the right (140 each side of the frame
+    # centre), and lines up with every widget, caption plate and card above and below it.
+    direction = cfg["language"].get("direction", "rtl")
+    hebrew = hfcfg.is_hebrew(cfg)
     right_x = W - G["headline_right_margin"]
-    avail = right_x - gx0
+    if direction == "rtl":
+        left_x = gx0
+    else:
+        left_x, lane_w = grid.center_lane(G)
+        right_x = left_x + lane_w
+    avail = right_x - left_x
     lead = float(cfg.get("cutting", {}).get("lead", 0.06))
     b = cfg["brand"]
     trans = load_transcript(cfg, words_path)
@@ -535,7 +551,7 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         warnings += [f"{hid}: {w}" for w in ws]
         # a number must not end a line with its unit on the next one ("20 / אלף")
         import captions
-        lean = set(captions.LEAN_BACK.get(cfg["language"].get("code", ""), set()))
+        lean = set(hfcfg.lang_rule(captions.LEAN_BACK, cfg["language"], set()))
         for a_, b_ in zip(lines, lines[1:]):
             last, first = a_["words"][-1]["text"], b_["words"][0]["text"]
             if re.search(r"\d[\d.,%]*$", last) and (norm(first) in {norm(x) for x in lean}):
@@ -564,11 +580,12 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         sz = it["hl"].get("size") or it["S"]["size"]
         sz = SIZE_WORDS.get(sz, sz) if isinstance(sz, str) else sz
         it["nominal"] = round(float(sz) * W / 1080.0)
+        it["dir"], it["hebrew"] = direction, hebrew
         it["inner"] = inner_html(it)
         fam_key.setdefault(fam, []).append(it)
     for fam, its in fam_key.items():
         got = measure(cfg, [{"id": it["id"], "size": it["nominal"], "lh": it["S"]["lh"],
-                             "html": it["inner"]} for it in its], fam)
+                             "html": it["inner"]} for it in its], fam, direction=direction)
         for it in its:
             m = (got or {}).get(it["id"])
             if m:
@@ -582,6 +599,9 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
             it["size"] = int(it["nominal"] * scale)
             it["height"] = int(round(height * scale)) + 2
             it["widest"] = int(round(widest * scale))
+            # the stack's horizontal extent: flush right (RTL) or flush left (LTR)
+            it["x0"], it["x1"] = ((right_x - it["widest"], right_x) if direction == "rtl"
+                                  else (left_x, left_x + it["widest"]))
             if scale < 0.999:
                 warnings.append(f"{it['id']}: widest line {int(widest)}px at {it['nominal']}px "
                                 f"→ fitted to {it['size']}px (safe width {avail}px)")
@@ -658,9 +678,9 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
                 warnings.append(f"{it['id']}: {h}px tall does not fit the safe zone — fewer lines")
         it["top"] = int(round(top))
         if hl.get("behind"):                 # behind the speaker: overlap is the point
-            it["matte"] = behind_gate(it, media, beatmap, aroll, cfg, right_x, warnings)
+            it["matte"] = behind_gate(it, media, beatmap, aroll, cfg, warnings)
         elif geo:                            # whatever moved it last, say if it hits the face
-            x0, x1 = right_x - it["widest"], right_x
+            x0, x1 = it["x0"], it["x1"]
             if it["top"] < geo["chin"] and it["top"] + h > geo["crown"] and \
                     x0 < geo["x1"] and x1 > geo["x0"]:
                 warnings.append(f"{it['id']}: the stack (y {it['top']}-{it['top'] + h}, x "
@@ -672,7 +692,7 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         if hl.get("on") == "paper":
             sc = False
         if sc == "auto" and aroll:
-            rect = (right_x - it["widest"], it["top"], right_x, it["top"] + h)
+            rect = (it["x0"], it["top"], it["x1"], it["top"] + h)
             lum = region_luma(aroll, (it["start"] + it["end"]) / 2, rect, W, H)
             it["luma"] = lum
             sc = lum is not None and lum > SCRIM_LUMA
@@ -687,7 +707,8 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         hid, S = it["id"], it["S"]
         on = "paper" if it["hl"].get("on") == "paper" else "footage"
         st, en = it["start"], it["end"]
-        style_attr = (f' style="right:{W - right_x}px; top:{it["top"]}px; '
+        anchor = (f"right:{W - right_x}px" if direction == "rtl" else f"left:{left_x}px")
+        style_attr = (f' style="{anchor}; top:{it["top"]}px; '
                       f'font-size:{it["size"]}px;"')
         els.append({"tag": "div", "id": hid,
                     "cls": f"kh s-{it['style']} on-{on}" + (" f-display" if
@@ -715,7 +736,14 @@ def plan(cfg, media, end_cap, beatmap=None, bounds=(), words_path="src/words.jso
         js.append(f'      tl.set("#{hid}", {{ opacity: 0 }}, {en});')
         if it["hide"]:
             hide.append([st, en, hid])
-    css = CSS.format(sm=SMALL, **{f"lh_{s}": STYLES[s]["lh"] for s in STYLES})
+    css = CSS.format(sm=SMALL, dir=direction, align="right" if direction == "rtl" else "left",
+                     scrim_inset=("-70px -90px -80px -140px" if direction == "rtl"
+                                  else "-70px -140px -80px -90px"),
+                     side_note=("Right-aligned RTL stack hanging from the\n         headline margin "
+                                "(x 920)" if direction == "rtl" else
+                                "Left-aligned LTR stack on the centred\n         lane's left edge "
+                                "(x 140)"),
+                     **{f"lh_{s}": STYLES[s]["lh"] for s in STYLES})
     return {"elements": els, "css": css, "js": js, "hide": hide,
             "table": {it["id"]: {"start": it["start"], "end": it["end"], "size": it["size"],
                                  "top": it["top"], "height": it["height"],
@@ -861,7 +889,7 @@ def behind_commands(aroll, hid, st, en, W, H, matte):
             f"  python3 scripts/matte.py {span} {shlex.quote(matte)}")
 
 
-def behind_gate(it, media, beatmap, aroll, cfg, right_x, warnings):
+def behind_gate(it, media, beatmap, aroll, cfg, warnings):
     """Checks for "behind": true, and the matte path. Stops the build (with the commands
     that fix it) rather than render words OVER the face or a matte out of sync:
       * the A-roll exists and the window is a full-screen beat (a panel moves the A-roll
@@ -921,7 +949,7 @@ def behind_gate(it, media, beatmap, aroll, cfg, right_x, warnings):
     if os.path.getmtime(matte) < os.path.getmtime(aroll):
         raise SystemExit(f"headline {hid}: {matte} is older than {aroll} (a re-cut?) — re-matte "
                          f"the window:\n{cmds}")
-    cover = matte_cover(matte, (right_x - it["widest"], it["top"], right_x,
+    cover = matte_cover(matte, (it["x0"], it["top"], it["x1"],
                                 it["top"] + it["height"]),
                         (en - st) / 2.0, W, H, it.get("footage_scale") or 1.0)
     it["behind_cover"] = cover
@@ -1041,17 +1069,16 @@ def inner_html(it):
         spans = []
         for w in ln["words"]:
             spans.append(f'<span id="{hid}w{i}" class="kw r-{w["role"]}"{mark}>'
-                         f'{word_html(w["text"])}</span>')
+                         f'{word_html(w["text"], it.get("dir", "rtl"), it.get("hebrew", True))}</span>')
             i += 1
         out.append(f'<div class="kl{" sm" if ln["small"] else ""}">{" ".join(spans)}</div>')
     return "".join(out)
 
 
 CSS = """
-      /* Kinetic headlines (scripts/kinetic.py). Right-aligned RTL stack hanging from the
-         headline margin (x 920), font-size set per headline by the Chrome fit. Colours are
+      /* Kinetic headlines (scripts/kinetic.py). {side_note}, font-size set per headline by the Chrome fit. Colours are
          tokens only: thin/bold white, keyword --hl-on-dark, partner a lighter tint of it. */
-      .kh {{ position: absolute; z-index: 45; direction: rtl; text-align: right;
+      .kh {{ position: absolute; z-index: 45; direction: {dir}; text-align: {align};
              white-space: nowrap; font-family: var(--brand-font), "Inter", sans-serif;
              --kh-thin: #ffffff; --kh-bold: #ffffff; --kh-key: var(--hl-on-dark);
              --kh-partner: color-mix(in srgb, var(--hl-on-dark) 42%, #ffffff);
@@ -1081,7 +1108,7 @@ CSS = """
       .kh .ai {{ font-weight: inherit; }}
       /* bright footage behind the stack (measured): a soft dark radial scrim, no edge */
       .kh.scrim::before {{ content: ""; position: absolute; z-index: 0; pointer-events: none;
-             inset: -70px -90px -80px -140px;
+             inset: {scrim_inset};
              background: radial-gradient(closest-side, rgba(0,0,0,.58), rgba(0,0,0,.32) 55%,
                                          rgba(0,0,0,0)); }}
       .kh.scrim {{ --kh-shadow: 0 2px 14px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.45); }}
@@ -1139,6 +1166,36 @@ def selftest():
     g2 = face_geometry(fm, None, 6, 8, W, H, 1.14)
     expect(g2["chin"] - g1["chin"] > 60, f"the punch moves the chin down on screen "
                                          f"({int(g1['chin'])} → {int(g2['chin'])})")
+    # ---- direction (references/languages.md): RTL flush right at x 920, LTR flush left at
+    # the centred lane's x 140, never past the rail (x 940)
+    expect(word_html("AI", "ltr", False) == "AI", "an LTR word is plain (no bdi, no slab)")
+    expect('class="ltr ai"' in word_html("ה-AI", "rtl", True), "a Hebrew 'AI' keeps the slab")
+    expect('class="ltr"' in word_html("ChatGPT", "rtl", False) and "ai" not in
+           word_html("AI", "rtl", False).split("class=")[1][:8],
+           "Arabic (RTL, not Hebrew): Latin isolated, no Hebrew slab")
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    try:
+        json.dump([[0.0, 0.3, "Stop"], [0.3, 0.7, "waiting"], [0.7, 1.1, "for"],
+                   [1.1, 1.5, "permission."]], open("words.json", "w"))
+        media = {"headlines": [{"id": "h1", "text": "Stop waiting / for *permission.*"}]}
+        for code, want_anchor, want_css in (("en", "left:140px", "direction: ltr; text-align: left"),
+                                            ("he", "right:160px", "direction: rtl; text-align: right")):
+            cfg = hfcfg.load(None)
+            cfg["language"].update({"code": code, "direction": "auto"})
+            hfcfg.resolve_language(cfg)
+            p = plan(cfg, media, 1e9, None, (), "words.json",
+                     framing_path=os.path.join(tmp, "none.json"))
+            el = p["elements"][0]
+            t = p["table"]["h1"]
+            expect(want_anchor in el["extra"] and want_css in p["css"],
+                   f"{code}: the stack anchors {want_anchor} ({el['extra'].strip()[:40]})")
+            if code == "en":
+                expect(140 + t["widest"] <= 940, f"en: the widest line ends at x "
+                                                 f"{140 + t['widest']} ≤ 940 (the rail)")
+                expect("-70px -140px -80px -90px" in p["css"], "en: the scrim is mirrored")
+    finally:
+        os.chdir(cwd)
     print(f"\n  {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
     return 1 if fails else 0
 

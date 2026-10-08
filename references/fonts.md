@@ -23,7 +23,9 @@ Everything lives in `scripts/fonts.py`.
 python3 scripts/fonts.py list                    # all 30 families, licence, weights, roles
 python3 scripts/fonts.py list --hebrew           # the 20 with real Hebrew glyphs
 python3 scripts/fonts.py list --role headline -v # by role, with notes
-python3 scripts/fonts.py pair                    # proven Hebrew pairings
+python3 scripts/fonts.py pair                    # proven pairings for the project's language
+python3 scripts/fonts.py pair --latin            # Latin-first pairings (English, Spanish…)
+python3 scripts/fonts.py list --script cyrillic  # faces that cover a given script
 python3 scripts/fonts.py fetch "Secular One"     # download + licence + lock record
 python3 scripts/fonts.py css Heebo "Secular One" --font-dir assets/fonts   # @font-face CSS
 python3 scripts/fonts.py guard index.html brand/brand.css --font-dir assets/fonts
@@ -49,8 +51,9 @@ Each fetch writes three things to the font dir:
 
 ## How to pick
 
-1. **Hebrew coverage first.** For a Hebrew reel, both the caption face and the display face
-   come from `list --hebrew`. A Latin-only display face (Bebas Neue, Anton, Montserrat) is
+1. **Script coverage first** (a gate: `preflight_qa.py` fails a caption or display face with
+   no glyphs for the take's language, `fonts.script_issues()`). For a Hebrew reel, both the
+   caption face and the display face come from `list --hebrew`. A Latin-only display face (Bebas Neue, Anton, Montserrat) is
    only for Latin-only words such as numbers, an English wordmark or a term of art. It must
    never be the face of a Hebrew line, or the Hebrew drops to the fallback.
 2. **The "AI" rule.** In Heebo (and most Hebrew sans faces), the capital I has no serifs, so a
@@ -84,6 +87,20 @@ Each fetch writes three things to the font dir:
 | Varela Round 400 | Karantina 700 | Playful: lifestyle, kids, food |
 | IBM Plex Sans Hebrew 700 | Heebo 900 | Corporate or tech |
 | Noto Sans Hebrew 700 | Noto Serif Hebrew 800 | Multi-language sets |
+
+### Latin-first pairings (`fonts.py pair --latin`)
+
+For English and other Latin-script languages. Heebo (the house face) works too, since it has
+Latin, but these faces are drawn for Latin first.
+
+| Caption / body | Headline / display | Use for |
+|---|---|---|
+| Inter 700 | Inter 900 | The neutral default: one family, the headline turned up |
+| Inter 600 | Montserrat 800 | Business, creators, tech |
+| Poppins 600 | Poppins 800 | Friendly: lifestyle, education |
+| Inter 700 | Bebas Neue 400 | Numbers and one-word punches: sport, finance |
+| Open Sans 700 | Oswald 600 | News, explainers |
+| Space Grotesk 600 | Space Grotesk 700 | AI and developer topics |
 
 When a reference video uses a commercial face, match its *character* with a registry face
 (for example, a condensed poster face becomes Karantina or Bebas Neue). Never chase the exact

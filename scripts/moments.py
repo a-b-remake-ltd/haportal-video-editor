@@ -160,17 +160,26 @@ def _js(s):
 _LATIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#%/:'’\-]*")
 
 
+# How display text is marked up, set by make_ctx() from the config's language: an RTL line
+# isolates every Latin/number run; the "AI" slab is Hebrew-only; an LTR line is plain text.
+# (Module state, because _word_html is called from every builder; make_ctx() always runs
+# before any of them, and it resets this for each build.)
+_TEXT = {"rtl": True, "slab": True}
+
+
 def _word_html(w):
     """One display word with every Latin/number run ISOLATED (bidi would reorder the line
     otherwise) and every all-caps acronym containing an I slabbed (Heebo 800 reads "AI" as
-    "Al")."""
+    "Al") — in an RTL video; in an LTR one the word is only escaped."""
+    if not _TEXT["rtl"]:
+        return _esc(w)
     out, i = [], 0
     for m in _LATIN.finditer(w):
         out.append(_esc(w[i:m.start()]))
         tok = m.group(0)
         cls = "m-ltr"
         core = re.sub(r"[^A-Za-z]", "", tok)
-        if core and core.isupper() and "I" in core and len(core) <= 5:
+        if _TEXT["slab"] and core and core.isupper() and "I" in core and len(core) <= 5:
             cls += " m-ai"
         out.append(f'<span class="{cls}">{_esc(tok)}</span>')
         i = m.end()
@@ -1354,6 +1363,10 @@ def make_ctx(cfg, media=None, end=None, beatmap=None, words=None, root=".", hook
     bounds = json.load(open(bp, encoding="utf-8")).get("bounds", []) if os.path.exists(bp) else []
     if hook_end is None and media.get("hook") and media["hook"].get("matte"):
         hook_end = float(media["hook"]["end"])
+    L = cfg.get("language", {})
+    _TEXT["rtl"] = L.get("direction", "rtl") == "rtl"
+    _TEXT["slab"] = _TEXT["rtl"] and (hfcfg.is_hebrew(L.get("code", "he"))
+                                      if L.get("code", "he") != "auto" else True)
     return {
         "cfg": cfg, "G": grid.from_config(cfg),
         "W": cfg["project"]["width"], "H": cfg["project"]["height"],

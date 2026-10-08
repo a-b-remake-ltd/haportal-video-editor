@@ -345,7 +345,9 @@ def check_words_covered(captions_json, transcript_json, typos=None):
 
 
 def check_caption_language(cfg, captions_json="captions.json"):
-    """Hebrew caption rules (references/hebrew.md) on the FINAL card text."""
+    """The language's caption rules on the FINAL card text: no card ends on a sticky word
+    (the language's list, or the generic short-word rule — references/languages.md), and,
+    in HEBREW only, every "AI" in the slab span (references/hebrew.md)."""
     if not os.path.exists(captions_json):
         return
     import captions as capmod
@@ -359,11 +361,14 @@ def check_caption_language(cfg, captions_json="captions.json"):
                       "; ".join(f"c{c['i']:02d} '{c['plain']}'" for c in dangling[:5]))
     bare = [c for c in caps if re.search(r"(?<![\w>])AI(?![\w<])", re.sub(
         r'<span class="ltr ai">AI</span>', "", c["text"]))]
-    if bare and cfg["language"].get("direction") == "rtl":
+    if not hfcfg.is_hebrew(cfg):
+        bare = []                         # the "Al" slab is a Hebrew-face rule only
+    if bare:
         issues.append(f"'AI' without class=\"ltr ai\" in {len(bare)} card(s) — it renders as "
                       f"'Al' in heavy Hebrew faces")
     if not dangling and not bare:
-        ok.append("captions: no sticky endings, every 'AI' protected")
+        ok.append("captions: no sticky endings" + (", every 'AI' protected"
+                                                   if hfcfg.is_hebrew(cfg) else ""))
 
 
 def check_grid(cfg, index_html="index.html"):
@@ -401,6 +406,21 @@ def check_fonts(cfg, index_html="index.html"):
         issues.append("NON-FREE OR UNLICENSED FONT: " + "; ".join(found[:4]))
     else:
         ok.append("fonts: every face is free for commercial use")
+    check_font_script(cfg)
+
+
+def check_font_script(cfg):
+    """The caption and display faces must have glyphs for the take's language — a missing
+    script is set in a fallback face (references/fonts.md, references/languages.md)."""
+    try:
+        import fonts
+    except ImportError:
+        return
+    b = cfg["brand"]
+    bad = fonts.script_issues([b.get("font_family"), b.get("display_family")],
+                              cfg["language"].get("code", ""))
+    if bad:
+        issues.append("FONT CANNOT SET THE LANGUAGE: " + "; ".join(bad[:2]))
 
 
 def check_loudness(render, cfg):
@@ -1358,6 +1378,25 @@ def selftest():
     expect(issues and "2×" in issues[0], "the same cue placed again by a sound step FAILS")
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
+    # language: the "AI" slab is Hebrew-only, the font must cover the script
+    capf = os.path.join(tempfile.mkdtemp(prefix="pf_"), "captions.json")
+    json.dump([{"i": 1, "n": 2, "text": "AI tools", "plain": "AI tools"},
+               {"i": 2, "n": 1, "text": "x", "plain": "x"}], open(capf, "w"))
+    base = {"brand": {"font_family": "Heebo", "display_family": ""}}
+    fresh()
+    check_caption_language(dict(base, language={"code": "en", "direction": "ltr"}), capf)
+    expect(not issues, "an English 'AI' needs no Hebrew slab")
+    fresh()
+    check_caption_language(dict(base, language={"code": "he", "direction": "rtl"}), capf)
+    expect(issues and "'Al'" in issues[0], "a bare 'AI' in a HEBREW caption fails")
+    fresh()
+    check_font_script({"brand": {"font_family": "Bebas Neue", "display_family": ""},
+                       "language": {"code": "he"}})
+    expect(issues and "CANNOT SET" in issues[0], "a face without Hebrew on a Hebrew take FAILS")
+    fresh()
+    check_font_script({"brand": {"font_family": "Heebo", "display_family": "Montserrat"},
+                       "language": {"code": "en"}})
+    expect(not issues, "Heebo + Montserrat on an English take passes")
     fresh()
     print(f"  {'all passed' if not fails else str(len(fails)) + ' FAILED'}")
     return 1 if fails else 0

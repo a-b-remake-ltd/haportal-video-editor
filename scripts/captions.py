@@ -25,9 +25,16 @@ Rules, in order (references/captions.md):
      bare number belongs to what follows. "תודה לך על מה" / "שעשית בשבילי" reads broken;
      "תודה לך" / "על מה שעשית בשבילי" reads right. Defaults per language below; extend with
      config language.sticky_words. A word that leans BACK ("הזאת", "מאוד") never opens one.
-  9. an all-caps Latin acronym with an I in it ("AI", "API") gets class "ai": in heavy
-     Hebrew faces a capital I has no serif and "AI" reads as "Al". The build sets that
-     span in Roboto Slab.
+  9. HEBREW ONLY: an all-caps Latin acronym with an I in it ("AI", "API") gets class
+     "ai": in heavy Hebrew faces a capital I has no serif and "AI" reads as "Al". The
+     build sets that span in Roboto Slab. In any RTL language a Latin run is isolated
+     (class "ltr") so bidi cannot reorder the line; an LTR caption needs neither.
+
+Languages (references/languages.md): the sticky / opener / lean-back / locked lists are
+keyed by config language.code (its base: "pt-BR" → "pt"). Hebrew, English, Spanish,
+French, German, Portuguese, Italian and Arabic have lists; any other language falls back
+to a generic rule — a bare 1-2 letter word (an article, a preposition, a conjunction in
+most languages) may not end a card — and config language.sticky_words adds to either.
 
 Timing (the hard-swap card, references/captions.md §timing):
   * a card STARTS on its first word's start (config captions.lead, default 0). The first
@@ -78,7 +85,53 @@ STICKY = {
            "and", "or", "but", "that", "which", "who", "if", "so", "as", "than", "into",
            "about", "my", "your", "our", "their", "his", "her", "its", "this", "these",
            "those", "not", "no", "very", "more", "most", "is", "are", "was"},
+    # Articles, prepositions, conjunctions, possessives and intensifiers that lean on the
+    # next word. Deliberately NOT words that often close a clause (fr "pas", de "nicht",
+    # pt "não", object pronouns): a false sticky costs a worse split, not a broken read.
+    "es": {"a", "al", "de", "del", "el", "la", "los", "las", "un", "una", "unos", "unas",
+           "y", "e", "o", "u", "que", "en", "con", "por", "para", "sin", "sobre", "entre",
+           "pero", "si", "como", "mi", "tu", "su", "mis", "tus", "sus", "nuestro",
+           "nuestra", "este", "esta", "estos", "estas", "ese", "esa", "muy", "más",
+           "cuando", "donde", "porque", "hasta", "desde"},
+    "fr": {"à", "au", "aux", "de", "des", "du", "le", "la", "les", "un", "une", "et", "ou",
+           "que", "qui", "en", "dans", "sur", "sous", "avec", "pour", "par", "sans", "entre",
+           "mais", "si", "comme", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses",
+           "notre", "nos", "votre", "vos", "leur", "leurs", "ce", "cet", "cette", "ces",
+           "très", "je", "il", "elle", "on", "ils", "elles", "quand", "où", "chez", "vers"},
+    "de": {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+           "einer", "eines", "und", "oder", "aber", "dass", "wenn", "weil", "als", "wie",
+           "in", "im", "an", "am", "auf", "aus", "bei", "mit", "nach", "von", "vom", "zu",
+           "zum", "zur", "für", "über", "unter", "vor", "durch", "gegen", "ohne", "um",
+           "mein", "meine", "dein", "deine", "seine", "unser", "unsere", "sehr", "kein",
+           "keine"},
+    "pt": {"a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das",
+           "em", "no", "na", "nos", "nas", "por", "pelo", "pela", "para", "com", "sem",
+           "sobre", "entre", "e", "ou", "mas", "que", "se", "como", "meu", "minha", "seu",
+           "sua", "nosso", "nossa", "este", "esta", "esse", "essa", "muito", "ao", "à",
+           "quando", "onde", "porque", "até", "desde"},
+    "it": {"il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "di", "del", "della",
+           "dei", "delle", "a", "al", "alla", "da", "dal", "dalla", "in", "nel", "nella",
+           "con", "su", "sul", "sulla", "per", "tra", "fra", "e", "o", "ma", "che", "se",
+           "come", "mio", "mia", "tuo", "tua", "suo", "sua", "nostro", "nostra", "questo",
+           "questa", "quel", "quella", "molto", "quando", "dove", "perché"},
+    "ar": {"في", "من", "على", "إلى", "الى", "عن", "مع", "و", "أو", "او", "لكن", "أن", "ان",
+           "إن", "الذي", "التي", "الذين", "هذا", "هذه", "ذلك", "تلك", "كل", "بعض", "حتى",
+           "بين", "عند", "قبل", "بعد", "كي", "لأن", "إذا", "اذا", "قد", "هل"},
 }
+
+
+class ShortWords(set):
+    """The generic sticky rule for a language with no list: a bare 1-2 letter word (an
+    article, a preposition or a conjunction in most languages written with spaces — nl
+    "de", "op", tr "ve", id "di") may not end a card, plus whatever the set holds
+    (config language.sticky_words). WHY: with no list at all every card could end on
+    "the"-like words, the commonest broken read there is."""
+
+    def __contains__(self, w):
+        # scripts written WITHOUT spaces (Thai U+0E00 and up: CJK, Hangul…) have short
+        # words everywhere — the rule would make half of every line sticky there
+        return set.__contains__(self, w) or (len(w) <= 2 and w.isalpha()
+                                             and all(ord(ch) < 0x0E00 for ch in w))
 
 
 def load_words(path):
@@ -139,6 +192,12 @@ OPENERS = {
     "he": {"אבל", "כי", "אז", "כש", "עכשיו", "כן", "אנחנו", "אני", "אתם", "אתן", "הם",
            "בעצם", "ככה", "לכן", "ואז", "ולכן", "אבל", "במילים"},
     "en": {"but", "because", "so", "and", "then", "now", "we", "i", "you", "which"},
+    "es": {"pero", "porque", "entonces", "y", "cuando", "ahora"},
+    "fr": {"mais", "parce", "donc", "et", "quand", "alors", "maintenant"},
+    "de": {"aber", "weil", "dann", "und", "dass", "wenn", "jetzt"},
+    "pt": {"mas", "porque", "então", "e", "quando", "agora"},
+    "it": {"ma", "perché", "allora", "e", "quando", "adesso"},
+    "ar": {"لكن", "لأن", "ثم", "و", "عندما"},
 }
 
 
@@ -192,10 +251,10 @@ def split_cards(words, lang, bounds=(), windows=()):
       * a pause longer than 0.45 s INSIDE a card: penalty (the card would hang through it)
     Sentence ends and hidden-window edges are hard breaks.
     """
-    openers = set(OPENERS.get(lang.get("code", ""), set())) | set(lang.get("clause_openers") or [])
+    openers = set(hfcfg.lang_rule(OPENERS, lang, set())) | set(lang.get("clause_openers") or [])
     locked = parse_locked(locked_list(lang))
     sticky = sticky_set(lang)
-    lean = set(LEAN_BACK.get(lang.get("code", ""), set()))
+    lean = set(hfcfg.lang_rule(LEAN_BACK, lang, set()))
     use_locks = [True]                      # dropped for one run only if it cannot be honoured
 
     def core(w):
@@ -318,7 +377,7 @@ def locked_list(lang):
     out = []
     if lang.get("locked_defaults", True):
         drop = {key(p) for p in lang.get("unlocked_phrases") or []}
-        out += [p for p in LOCKED_DEFAULT.get(lang.get("code", ""), []) if key(p) not in drop]
+        out += [p for p in hfcfg.lang_rule(LOCKED_DEFAULT, lang, []) if key(p) not in drop]
     have = {key(p) for p in out}
     out += [p for p in lang.get("locked_phrases") or [] if key(p) not in have]
     return out
@@ -349,8 +408,13 @@ def parse_locked(phrases):
 
 
 def sticky_set(lang):
-    base = set(STICKY.get(lang.get("code", ""), set()))
-    return base | set(lang.get("sticky_words") or [])
+    """The words that may not end a card: the language's list, or the generic short-word
+    rule (ShortWords) for a language without one; config language.sticky_words adds."""
+    extra = set(lang.get("sticky_words") or [])
+    base = hfcfg.lang_rule(STICKY, lang, None)
+    if base is None:
+        return ShortWords(extra)
+    return set(base) | extra
 
 
 def is_sticky(w, sticky):
@@ -365,16 +429,19 @@ def is_sticky(w, sticky):
 AI_LIKE = re.compile(r"^[A-Z0-9]*I[A-Z0-9]*$")
 
 
-def render_text(card, direction):
+def render_text(card, direction, hebrew=None):
     """Wrap Latin runs in an isolated LTR span. In a caption the verbatim rule wins, so
-    you cannot rewrite the Latin away to dodge bidi reordering — isolate it instead."""
+    you cannot rewrite the Latin away to dodge bidi reordering — isolate it instead.
+    Only an RTL caption needs that; an LTR one is plain text. The "ai" slab class is
+    Hebrew-only (hebrew=None keeps the old behaviour: every RTL caption)."""
     parts = []
+    slab = direction == "rtl" if hebrew is None else bool(hebrew)
     for _, _, w in card:
         if direction == "rtl" and re.search(r"[A-Za-z]", w):
             m = re.match(r"^([^A-Za-z]*)([A-Za-z][A-Za-z'’0-9.\-]*)(.*)$", w)
             if m:
                 pre, lat, post = m.groups()
-                cls = "ltr ai" if AI_LIKE.match(lat) else "ltr"
+                cls = "ltr ai" if slab and AI_LIKE.match(lat) else "ltr"
                 parts.append(f'{html.escape(pre)}'
                              f'<span class="{cls}">{html.escape(lat)}</span>'
                              f'{html.escape(post)}')
@@ -562,6 +629,7 @@ def main():
     if a.selftest:
         return selftest()
     cfg = hfcfg.load(a.config)
+    hfcfg.require_language(cfg, "captions.py")
     lang = cfg["language"]
     cc = cfg.get("captions", {})
     lead = float(cc.get("lead", 0.0))
@@ -649,7 +717,7 @@ def main():
             if en - last_end > pause_trim:
                 en, end_by = min(en, snap_up(last_end + pause_tail)), "pause"
         row = {"i": k + 1, "start": round(s0, 3), "dur": round(max(en - s0, FRAME), 3),
-               "text": render_text(c, lang["direction"]),
+               "text": render_text(c, lang["direction"], hfcfg.is_hebrew(lang)),
                "plain": " ".join(w for _, _, w in c), "n": len(c),
                "words": [[round(x, 3), round(y, 3), w] for x, y, w in c], "end_by": end_by}
         if hidden[k]:
@@ -796,6 +864,26 @@ def selftest():
     heads = [(10.0, 11.4, {"אז", "תפסיקו", "לחכות"})]
     want("headline gate passes a spelled word",
          unshown_words([{"hidden": True, "words": hw}], hw, [[10.0, 11.4]], heads) == [])
+    # ---- other languages (references/languages.md)
+    en = {"code": "en", "direction": "ltr"}
+    c = plain(split_cards(ws("I built the whole thing in a weekend with no team."), en))
+    want("English: no card ends on a sticky word ('the', 'a', 'with')",
+         not any(p.split()[-1].lower() in STICKY["en"] for p in c[:-1]), c)
+    want("English sticky list in force", is_sticky("the", sticky_set(en))
+         and not is_sticky("weekend", sticky_set(en)))
+    want("pt-BR uses the Portuguese list (base code)", is_sticky("para", sticky_set({"code": "pt-br"})))
+    nl = sticky_set({"code": "nl"})
+    want("a language without a list: a bare 1-2 letter word is sticky (generic rule)",
+         is_sticky("de", nl) and is_sticky("op", nl) and not is_sticky("fiets", nl))
+    want("generic rule: punctuation still closes it", not is_sticky("op.", nl))
+    want("config sticky_words extend the generic rule",
+         is_sticky("omdat", sticky_set({"code": "nl", "sticky_words": ["omdat"]})))
+    want("an LTR caption is plain text (no isolation, no slab)",
+         render_text([[0, 1, "AI"], [1, 2, "tools"]], "ltr", False) == "AI tools")
+    want("Hebrew keeps the AI slab",
+         'class="ltr ai"' in render_text([[0, 1, "ה-AI"]], "rtl", True))
+    ar = render_text([[0, 1, "AI"]], "rtl", False)
+    want("Arabic isolates Latin but gets no Hebrew slab", 'class="ltr"' in ar and "ai\"" not in ar, ar)
     for f in fails:
         print(f"  ✗ {f}")
     print(f"  captions selftest: {'FAIL' if fails else 'ok'} ({n[0] - len(fails)}/{n[0]})")

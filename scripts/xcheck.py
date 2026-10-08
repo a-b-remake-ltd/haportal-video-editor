@@ -11,10 +11,23 @@ the SAME mistake, so a word both agree on is very likely right, and every disagr
 exactly where a human (or Claude, reading the context) has to decide. That turns "proof-read
 600 words" into "decide 10 places".
 
-  engine A  ivrit-ai/whisper-large-v3-turbo-ct2 on faster-whisper — the Hebrew fine-tune
-  engine B  mlx-community/whisper-large-v3-turbo on mlx-whisper (Apple Silicon), with the
-            glossary as the initial prompt. Where mlx-whisper is missing it falls back to
-            faster-whisper large-v3 (same idea, slower, CPU).
+THE LANGUAGE FIRST. With config `language.code: "auto"` (the default) the take's language
+is detected before anything else (scripts/detect_language.py --apply: code + direction into
+config.json). Unsure → exit 2 and nothing is transcribed: ask the user, then
+`detect_language.py --set <code>`. The engines follow the language:
+
+  Hebrew
+    engine A  ivrit-ai/whisper-large-v3-turbo-ct2 on faster-whisper — the Hebrew fine-tune
+    engine B  mlx-community/whisper-large-v3-turbo on mlx-whisper (Apple Silicon), with the
+              glossary as the initial prompt. Where mlx-whisper is missing it falls back to
+              faster-whisper large-v3 (same idea, slower, CPU).
+  any other language (ivrit-ai would read it as Hebrew)
+    engine A  mlx-community/whisper-large-v3-mlx on mlx-whisper (Apple Silicon), else
+              faster-whisper large-v3
+    engine B  the other one: faster-whisper large-v3 — or, when A already is faster-whisper
+              (no Apple Silicon), faster-whisper large-v3-turbo, a different model
+  The glossary goes in as the initial prompt in the detected language's own script
+  (transcribe.py drops terms written in another script).
   Both run through scripts/transcribe.py in their own process (so each engine's deps stay
   isolated, and the transcript cache means a re-run costs nothing). When a package is not
   importable here or in the skill venv but `uv` is installed, the engine runs under
@@ -64,6 +77,7 @@ import hfcfg  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MLX_TURBO = "mlx-community/whisper-large-v3-turbo"
+MLX_LARGE = "mlx-community/whisper-large-v3-mlx"
 PUNCT_TAIL = re.compile(r"[.,?!…:;\"'”)]+$")
 TIME_KEY = re.compile(r"^\d+(?:\.\d+)?$")
 
@@ -84,30 +98,78 @@ def _python_for(module):
     return None, f"{module} is not installed (python3 {HERE}/doctor.py --install)"
 
 
-def plan_engines(want_b="mlx"):
-    """The two (engine, model, argv-prefix, how) runs. B falls back to faster large-v3."""
+def plan_engines(want_b="mlx", lang="he"):
+    """The two (tag, engine, model, argv-prefix, how) runs, chosen by language (see the
+    module doc). The tag names the output files (src/xcheck/<tag>.json)."""
     out = []
     pa, how = _python_for("faster_whisper")
-    if not pa:
-        sys.exit(f"engine A (ivrit) cannot run: {how}")
-    out.append(("ivrit", "ivrit-ai/whisper-large-v3-turbo-ct2", pa, how))
-    if want_b == "mlx" and sys.platform == "darwin":
-        pb, howb = _python_for("mlx_whisper")
-        if pb:
-            out.append(("mlx", MLX_TURBO, pb, howb))
+    mlx_ok = sys.platform == "darwin" and want_b == "mlx"
+    pm, howm = _python_for("mlx_whisper") if mlx_ok else (None, "not on macOS")
+    if hfcfg.is_hebrew(lang):
+        if not pa:
+            sys.exit(f"engine A (ivrit) cannot run: {how}")
+        out.append(("ivrit", "ivrit", "ivrit-ai/whisper-large-v3-turbo-ct2", pa, how))
+        if pm:
+            out.append(("mlx", "mlx", MLX_TURBO, pm, howm))
             return out
-        print(f"  ! mlx-whisper unavailable ({howb}) — engine B falls back to faster-whisper "
-              f"large-v3")
-    out.append(("faster", "large-v3", pa, how))
+        if mlx_ok:
+            print(f"  ! mlx-whisper unavailable ({howm}) — engine B falls back to faster-whisper "
+                  f"large-v3")
+        out.append(("faster", "faster", "large-v3", pa, how))
+        return out
+    # any other language: large-v3 on both engines, never the Hebrew fine-tune
+    if not pa and not pm:
+        sys.exit(f"no transcriber can run: {how}")
+    if pm:
+        out.append(("mlx", "mlx", MLX_LARGE, pm, howm))
+        if pa:
+            out.append(("faster", "faster", "large-v3", pa, how))
+            return out
+        sys.exit(f"engine B (faster-whisper) cannot run: {how}")
+    if mlx_ok:
+        print(f"  ! mlx-whisper unavailable ({howm}) — both engines run on faster-whisper "
+              f"(large-v3 + large-v3-turbo)")
+    out.append(("faster", "faster", "large-v3", pa, how))
+    out.append(("turbo", "faster", "large-v3-turbo", pa, how))
     return out
 
 
-def run_engine(media, engine, model, prefix, how, a):
+def resolve_language(a, media):
+    """The first pipeline step: settle config language.code before choosing engines.
+
+    "auto" → scripts/detect_language.py --apply, run under a python that has faster-whisper
+    (this script itself stays stdlib-only). Exit 2 from it = unsure: stop here and ask."""
+    cfg = hfcfg.load(a.config)
+    if a.lang:
+        return hfcfg.lang_base(a.lang) if hfcfg.is_hebrew(a.lang) else a.lang.lower()
+    if cfg["language"].get("resolved"):
+        return cfg["language"]["code"]
+    py, how = _python_for("faster_whisper")
+    if not py:
+        sys.exit(f"cannot detect the language: {how}")
+    cmd = py + [os.path.join(HERE, "detect_language.py"), media, "--apply"]
+    if a.config:
+        cmd += ["--config", os.path.abspath(a.config)]
+    print(f"  language: config says \"auto\" — detecting it from the take ({how})")
+    r = hfcfg.run(cmd, capture_output=False)
+    if r.returncode == 2:
+        print("  ✗ the language is unclear — ask the user which language the take is in, then:\n"
+              f"      python3 {os.path.join(HERE, 'detect_language.py')} --set <code>\n"
+              "    and run xcheck.py again")
+        sys.exit(2)
+    if r.returncode:
+        sys.exit(f"language detection failed (exit {r.returncode})")
+    cfg = hfcfg.load(a.config)
+    hfcfg.require_language(cfg, "xcheck.py")
+    return cfg["language"]["code"]
+
+
+def run_engine(media, tag, engine, model, prefix, how, a, lang):
     os.makedirs("src/xcheck", exist_ok=True)
-    out = f"src/xcheck/{engine}.json"
+    out = f"src/xcheck/{tag}.json"
     cmd = prefix + [os.path.join(HERE, "transcribe.py"), media, "--engine", engine,
-                    "--model", model, "--out", out, "--words", f"src/xcheck/{engine}_words.json",
-                    "--flags", ""]
+                    "--model", model, "--lang", lang, "--out", out,
+                    "--words", f"src/xcheck/{tag}_words.json", "--flags", ""]
     if a.config:
         cmd += ["--config", os.path.abspath(a.config)]
     if a.glossary:
@@ -118,10 +180,10 @@ def run_engine(media, engine, model, prefix, how, a):
         cmd += ["--end", str(a.end)]
     if a.force:
         cmd += ["--force"]
-    print(f"  {engine} ({model}) via {how}")
+    print(f"  {tag}: {engine} ({model}) via {how}")
     r = hfcfg.run(cmd, capture_output=False)
     if r.returncode or not os.path.exists(out):
-        sys.exit(f"engine {engine} failed (exit {r.returncode})")
+        sys.exit(f"engine {tag} failed (exit {r.returncode})")
     return json.load(open(out, encoding="utf-8"))
 
 
@@ -318,12 +380,50 @@ def markdown(names, rows, agree, na, nb, changes, unmatched):
     return "\n".join(L) + "\n"
 
 
+def selftest():
+    """The engine choice per language, with the interpreters faked — `xcheck.py selftest`."""
+    global _python_for
+    fails = []
+
+    def want(nm, ok):
+        print(f"  {'✓' if ok else '✗'} {nm}")
+        if not ok:
+            fails.append(nm)
+
+    real, real_platform = _python_for, sys.platform
+    try:
+        sys.platform = "darwin"
+        _python_for = lambda m: (["py"], "fake")                       # noqa: E731
+        he = plan_engines("mlx", "he")
+        want("Hebrew: ivrit-ai + mlx turbo", [p[0] for p in he] == ["ivrit", "mlx"])
+        en = plan_engines("mlx", "en")
+        want("English on Apple Silicon: mlx large-v3 + faster large-v3",
+             [(p[0], p[2]) for p in en] == [("mlx", MLX_LARGE), ("faster", "large-v3")])
+        want("English never runs the Hebrew fine-tune",
+             not any("ivrit" in p[2] for p in en + plan_engines("faster", "en")))
+        _python_for = lambda m: ((None, "no mlx") if m == "mlx_whisper"   # noqa: E731
+                                 else (["py"], "fake"))
+        en2 = plan_engines("mlx", "es")
+        want("no mlx: faster large-v3 + faster large-v3-turbo, distinct tags",
+             [(p[0], p[2]) for p in en2] == [("faster", "large-v3"), ("turbo", "large-v3-turbo")])
+        he2 = plan_engines("mlx", "he")
+        want("Hebrew without mlx: ivrit + faster large-v3", [p[0] for p in he2] == ["ivrit", "faster"])
+    finally:
+        _python_for, sys.platform = real, real_platform
+    print(f"\n  xcheck selftest: {'ok' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
 def main():
+    if sys.argv[1:2] == ["selftest"]:
+        return selftest()
     ap = hfcfg.arg_parser(__doc__.split("\n\n")[0])
     ap.add_argument("media")
-    ap.add_argument("--primary", choices=("ivrit", "b"), default="ivrit",
-                    help="whose words (and timings) become src/raw_words.json: ivrit (default) "
-                         "or b = the second engine")
+    ap.add_argument("--primary", choices=("a", "ivrit", "b"), default="a",
+                    help="whose words (and timings) become src/raw_words.json: a = engine A "
+                         "(default; ivrit-ai for Hebrew, large-v3 otherwise — \"ivrit\" is the "
+                         "old name for it) or b = the second engine")
+    ap.add_argument("--lang", help="override config language.code for this run")
     ap.add_argument("--engine-b", choices=("mlx", "faster"), default="mlx")
     ap.add_argument("--glossary", default="", help='extra "term1,term2" on top of config')
     ap.add_argument("--start", type=float)
@@ -351,8 +451,10 @@ def main():
         names = prev["engines"]
         res = [json.load(open(f"src/xcheck/{n}.json", encoding="utf-8")) for n in names]
     else:
-        plan = plan_engines(a.engine_b)
-        res = [run_engine(media, e, m, p, h, a) for e, m, p, h in plan]
+        lang = resolve_language(a, media)
+        plan = plan_engines(a.engine_b, lang)
+        print(f"  language {lang}: engines {' + '.join(p[0] for p in plan)}")
+        res = [run_engine(media, tg, e, m, p, h, a, lang) for tg, e, m, p, h in plan]
         names = [p[0] for p in plan]
     if a.primary == "b":
         res, names = res[::-1], names[::-1]

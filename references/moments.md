@@ -69,7 +69,8 @@ speech: a structural moment (`paper`, `fly`) starts on a **sentence boundary** l
  "watermark_crop": [165, 15, 348, 230]}
 ```
 
-- The brand hairline sweeps across in reading direction (right to left in Hebrew), the footage
+- The brand hairline sweeps across in reading direction (right to left in Hebrew, left to
+  right in LTR languages), the footage
   wipes off **exactly on the line**, with a slight push; the paper page (bone `--brand-paper`,
   hairline frame, the logo watermark slowly turning) is underneath. At `end − turn` the same
   line wipes the footage back on. `turn` defaults to 0.5 s.
@@ -131,7 +132,8 @@ face.
            {"text": "וואטסאפ", "cue": "ובוואטסאפ", "accent": true}]}
 ```
 
-2-4 pills in a centred RTL row (the first item on the right), each popping on the word that
+2-4 pills in a centred row in reading order (the first item on the right in RTL, on the left
+in LTR), each popping on the word that
 names it. A Hebrew prefix is matched ("פייסבוק" finds "בפייסבוק"). One `accent` chip at most
 (one accent per frame). `at`: `top` (y 250), `low` (y 1250) or a y.
 

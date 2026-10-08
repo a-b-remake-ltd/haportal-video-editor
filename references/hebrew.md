@@ -1,8 +1,9 @@
 # Hebrew — the language-specific rules
 
-The skill is Hebrew-first. Every rule below came from a delivered video that came back
-with a note. Read `references/captions.md` §RTL first. This file adds what Hebrew
-specifically breaks.
+Every rule below came from a delivered Hebrew video that came back with a note. They apply
+when the detected language is Hebrew (`language.code: "he"`). What changes for other
+languages and directions is in `references/languages.md`. Read `references/captions.md`
+§RTL first. This file adds what Hebrew specifically breaks.
 
 ---
 

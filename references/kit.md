@@ -95,7 +95,7 @@ a seek-safe `fromTo(…, immediateRender:false)`; hidden starting states live in
 | `s.steps(sel, [(t, k), ...])` | show child k of a state stack from t (`swap` uses it) |
 | `s.shake(sel, t, amp=14, axis="y")` | ±amp for 0.06 s, yoyo ×3 |
 | `s.spin(sel, t0, t1)` | linear rotation for the widget's whole life |
-| `s.strike(bar, pill, t)` | RTL red bar scaleX 0 → 1 in 0.22 s, then the pill dims to .45 |
+| `s.strike(bar, pill, t)` | red bar scaleX 0 → 1 in reading direction in 0.22 s, then the pill dims to .45 |
 | `s.stamp(sel, t, rot=-6)` | scale 2.3, rot −16 → 1, rot −6 in 0.18 s power4.in |
 | `s.draw(sel, t, d=.5)` | stroke-dashoffset 100 → 0 (paths with `pathLength="100"`) |
 | `s.push(sel, t, d=.6, a=1, b=1.08)` / `s.drift(sel, t0, t1, b=1.04)` / `s.float(sel, t0, t1)` / `s.pulse(sel, t)` / `s.tap(sel, t)` | slow push / ambient drift / float / pulse / press |
@@ -127,8 +127,9 @@ k.widget(s, body, title=None, sub=None, lead=None, aside=None, eyebrow=None, eye
 The glass sky widget: 800 px centred on the frame (x 140-940), top 250, glass .84. It must
 end above the head: `ctx.sky["bottom"]` is y 600, or the measured head top − 20, and the grid
 gate fails a widget (`data-sky`) that reaches lower. The height left for the body is passed
-on as the CSS variable `--kt-avail` (the calendar shrinks to it). Header in RTL order: `lead`
-(avatar/badge), title + sub, `aside` (spinner/pill); `eyebrow` = small icon + label instead.
+on as the CSS variable `--kt-avail` (the calendar shrinks to it). Header in reading order
+(right to left in RTL, left to right in LTR): `lead` (avatar/badge), title + sub, `aside`
+(spinner/pill); `eyebrow` = small icon + label instead.
 Enters at `t_in` (default scene start) with `drop` | `slide` | `pop` | `none`, leaves with
 `away` at `t_out` (default end − 0.3; `False` = hard cut).
 
@@ -146,7 +147,9 @@ an element up to 800 px wide is centred on 540 (its right edge stays ≤ 940, cl
 like/comment rail); only a wider one shifts left, just enough to keep its right edge on 940.
 Sky widgets and hook cards are exactly 800 px (x 140-940); chips, pills, the percent, word
 stacks and the hook titles live in that 800 px lane; `today` and `stamp` default to x 540.
-Kinetic headlines are the one exception (right-aligned at right 160). The grid gate measures
+Kinetic headlines are the one exception (flush right at right 160 in RTL, flush left at
+x 140 in LTR). Everything directional in the kit mirrors with `ctx.dir`
+(`references/languages.md`). The grid gate measures
 every element marked `data-center` and fails one that is never within ±4 px of its mark.
 
 ### State and status

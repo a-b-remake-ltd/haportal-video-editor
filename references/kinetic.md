@@ -79,8 +79,9 @@ Bold is `+`, not `!`, because a Hebrew sentence may end on "!". Check a line wit
 `python3 scripts/kinetic.py parse "<markup>"`.
 
 The same markers work in the kit's word stacks (`kit.stack`, the hook opener `intro=`).
-Headlines stay right-aligned at right 160 on the chest (a design choice): they are the one
-exception to the centring rule of `references/grid.md`.
+Headlines stay flush to the reading side on the chest (a design choice): right-aligned at
+right 160 in RTL, left-aligned at x 140 in LTR. They are the one exception to the centring
+rule of `references/grid.md`.
 
 One keyword per headline, two at most (a partner + keyword pair counts as one idea).
 Colour everything and nothing stands out.
@@ -114,7 +115,10 @@ frame the word is already ~30 % in, which reads as the same faint entry. Exit is
 ## Placement (the grid)
 
 - **Right-aligned RTL stack hanging from x 920** (`1080 − headline_right_margin`), inside
-  the safe zone x 60-940 and clear of the action rail.
+  the safe zone x 60-940 and clear of the action rail. **LTR:** a left-aligned stack from
+  x 140 (the centred lane's left edge), fitted to the 800 px up to x 940. The rail caps the
+  right edge in both directions, and x 140 lines up with the widgets and captions
+  (`references/languages.md`).
 - **Size is measured, not guessed.** Every line is measured in headless Chrome in the real
   face and weights, and the font shrinks until the widest line fits the 860 px between x 60
   and x 920. Under ~64 px the build tells you to break the line instead.
@@ -190,7 +194,10 @@ transparent there, splitting a card that straddles an edge. `captions.json` is n
 and the layer keeps its exact length, so preflight continuity and `finish.py` are
 unaffected. Inline captions get hard `tl.set` hides instead.
 
-## Hebrew
+## Hebrew (and RTL)
+
+LTR languages: `direction: ltr`, left-aligned. The first word lands on the LEFT. No
+isolation and no slab: the words are plain text.
 
 - `direction: rtl`, right-aligned. The first word lands on the RIGHT. Check it on a frame.
 - Latin is isolated in `<bdi class="ltr">`, and `AI`-like acronyms get `class="ltr ai"`

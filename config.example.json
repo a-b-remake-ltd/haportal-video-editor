@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this to your project as config.json. Nothing personal belongs in the skill itself. Hebrew-first defaults; change language.code/direction for other languages.",
+  "_comment": "Copy this to your project as config.json. Nothing personal belongs in the skill itself. The language is detected from the take (scripts/detect_language.py, run by the first pipeline step); nothing to edit for any language.",
 
   "project": {
     "name": "my-reel",
@@ -10,8 +10,9 @@
   },
 
   "language": {
-    "code": "he",
-    "direction": "rtl",
+    "_comment": "code auto = detected from the take by xcheck.py / transcribe.py and written here (he, en, es, ar…); direction auto = rtl for he/ar/fa/ur…, ltr otherwise. Override: scripts/detect_language.py --set en. See references/languages.md.",
+    "code": "auto",
+    "direction": "auto",
     "_comment_transcriber": "auto = ivrit.ai Hebrew Whisper for 'he', large-v3 otherwise (free, local). 'scribe' = ElevenLabs, paid, needs ELEVENLABS_API_KEY.",
     "transcriber": "auto",
     "whisper_model": "",
@@ -29,7 +30,7 @@
   },
 
   "brand": {
-    "_comment_fonts": "Free fonts only — see `python3 scripts/fonts.py list --hebrew`. display_family is optional (headlines, outro).",
+    "_comment_fonts": "Free fonts only — `python3 scripts/fonts.py pair` lists proven pairings for the project's language (Heebo sets Hebrew and Latin). display_family is optional (headlines, outro).",
     "font_family": "Heebo",
     "display_family": "",
     "font_dir": "assets/fonts",

@@ -36,8 +36,10 @@ All values are for a **1080 x 1920** frame and scale linearly with the frame. A
   elements aren't centred". A block up to 800 px wide can sit on 540 and still clear the
   rail, so it does; capping captions, cards and widgets at 800 px is cheaper than looking
   off-centre.
-- **Kinetic headlines** hang right-aligned from x 920 (a 160 px right margin) in RTL: a
-  design choice, the one exception to the centring rule.
+- **Kinetic headlines** hang right-aligned from x 920 (a 160 px right margin) in RTL, and
+  left-aligned from x 140 in LTR (the rail caps the right edge at 940, so x 140 gives the
+  same 800 px lane; `references/languages.md`): a design choice, the one exception to the
+  centring rule.
 - **Bottom cards** anchor to y 1520 and grow upward, ~300 px at most, so they stop
   below the caption band. In `media.json` a graphic with `"class": "card low"` is exactly
   this, and the speaker's face stays clear: the default card for a talking beat.

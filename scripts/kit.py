@@ -210,7 +210,8 @@ _DASH = re.compile(r"(?<![\d\u05d0-\u05ea])[\-–—](?!\d)|(?<=\d)[–—](?=\d
 def text(s, ctx=None):
     """Escape on-screen text; isolate Latin/number runs (bidi would reorder a Hebrew line) and
     slab any acronym containing an I ("AI" in a heavy Hebrew face reads "Al"). Html passes
-    through untouched."""
+    through untouched. In an LTR video (ctx.dir "ltr") the text is only escaped: nothing to
+    isolate, and the slab is a Hebrew-face rule (ctx.hebrew)."""
     if s is None:
         return ""
     if isinstance(s, Html):
@@ -219,13 +220,16 @@ def text(s, ctx=None):
     if ctx is not None and _DASH.search(s):
         ctx.note(f"on-screen text {s!r} contains a dash — the house rule is no dashes in "
                  f"on-screen copy (number ranges excepted)")
+    if ctx is not None and getattr(ctx, "dir", "rtl") != "rtl":
+        return Html(_html.escape(s))
+    slab = ctx is None or getattr(ctx, "hebrew", True)
     out, i = [], 0
     for m in _LATIN.finditer(s):
         out.append(_html.escape(s[i:m.start()]))
         tok = m.group(0)
         core = re.sub(r"[^A-Za-z]", "", tok)
         cls = "kt-ltr"
-        if core and core.isupper() and "I" in core and len(core) <= 5:
+        if slab and core and core.isupper() and "I" in core and len(core) <= 5:
             cls += " kt-ai"
         out.append(f'<bdi class="{cls}">{_html.escape(tok)}</bdi>')
         i = m.end()
@@ -685,8 +689,9 @@ def widget(s, body="", title=None, sub=None, lead=None, aside=None, eyebrow=None
     top 250, ending above the head (ctx.sky["bottom"]: y 600, or head top − 20 when
     build/framing.json is measured).
 
-    Header (RTL order, right to left): `lead` (an avatar/badge) · title + sub · `aside`
-    (a spinner, a status pill). `eyebrow` is the small icon + label line instead of a title.
+    Header in reading order — RTL right to left, LTR left to right (the scene's direction
+    mirrors the flex row): `lead` (an avatar/badge) · title + sub · `aside` (a spinner, a
+    status pill). `eyebrow` is the small icon + label line instead of a title.
     Enters with `drop` (or "slide" / "pop" / "none") at t_in (default: the scene start) and
     leaves with `away` at t_out (default: 0.3 s before the scene end; False = no exit).
     sfx= (role "in", default soft_whoosh 0.14): see Sfx. The body may read the height left
@@ -898,9 +903,9 @@ def avatars(s, picks, odd=None, odd_t=None, colors=None, size=120, name="kd"):
 
 def week(s, hit=4, t0=None, step=0.13, pulse_t=None, days=None, name="d"):
     """A week strip whose days light up one by one until day `hit` glows electric and pulses
-    ("waiting for Thursday"). days default to the Hebrew week (RTL: Sunday on the right)."""
-    days = days or (["א", "ב", "ג", "ד", "ה", "ו", "ש"] if s.ctx.dir == "rtl"
-                    else ["M", "T", "W", "T", "F", "S", "S"])
+    ("waiting for Thursday"). days default to the Hebrew week in Hebrew (RTL: Sunday on the
+    right), else M-S (LTR: Monday on the left); pass days= for any other language."""
+    days = days or _week_days(s.ctx)
     t0 = s.at(s.start + 0.25 if t0 is None else t0)
     out = []
     for i, d in enumerate(days):
@@ -915,6 +920,16 @@ def week(s, hit=4, t0=None, step=0.13, pulse_t=None, days=None, name="d"):
     pt = s.at(pulse_t) if pulse_t is not None else r3(t0 + step * hit + 0.1)
     s.pulse("#" + s.uid(f"{name}{hit}"), pt, 1.2, 0.25)
     return Html(f'<div class="kt-days">{"".join(out)}</div>')
+
+
+def _week_days(ctx):
+    """The default day letters, in reading order (the flex row's direction mirrors them)."""
+    if getattr(ctx, "hebrew", ctx.dir == "rtl"):
+        return ["א", "ב", "ג", "ד", "ה", "ו", "ש"]
+    if not getattr(ctx, "lang", "en").startswith("en"):
+        ctx.note("kit: week/calendar day letters default to English (M T W …) — pass days= "
+                 "in the video's language")
+    return ["M", "T", "W", "T", "F", "S", "S"]
 
 
 def phone(s, title, sub=None, t0=None, t1=None, fill=0.92, name="ph"):
@@ -944,8 +959,7 @@ def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=N
     sfx= roles: move (swap_pop 0.1, each slide), fly (soft_whoosh 0.12)."""
     ctx = s.ctx
     cue = Sfx(s, sfx, "calendar", SFX_ROLES["calendar"])
-    days = days or (["א", "ב", "ג", "ד", "ה", "ו", "ש"] if ctx.dir == "rtl"
-                    else ["M", "T", "W", "T", "F", "S", "S"])
+    days = days or _week_days(ctx)
     inner_w = ctx.G["max_centered_w"] - 72          # the widget's content width (padding 36)
     pitch = (inner_w - 92) / 6.0
     eid = s.uid(name + "e")
@@ -970,9 +984,10 @@ def calendar(s, event, labels=None, moves=(), col=0, span=3, fly_t=None, never=N
                  f"{s.end - 0.3:.2f}s by default — give it ≥ 0.3 s of hold (end the scene later, or "
                  f"pass t_out to the widget)")
     if never:
-        # inside the calendar: x/y are in its own box (the stamp sits over the week)
-        st = stamp(s, never, never_t if never_t is not None else s.end - 0.6, x=150, y=120,
-                   rot=-8, size=96)
+        # inside the calendar: x/y are in its own box (the stamp sits over the week), on the
+        # side the event moved TO — the later days: left in RTL, right in LTR
+        st = stamp(s, never, never_t if never_t is not None else s.end - 0.6,
+                   x=150 if ctx.dir == "rtl" else r3(inner_w - 150), y=120, rot=-8, size=96)
     cells = "".join(f"<span>{text(d, ctx)}</span>" for d in days)
     boxes = "".join("<i></i>" for _ in days)
     return Html(f'<div class="kt-cal"><div class="kt-cgrid">{cells}</div><div class="kt-cells">{boxes}</div>'
@@ -1136,7 +1151,8 @@ def chat(s, msgs, typing=None, sfx=DEFAULT, name="ch"):
 
 
 def strike_pills(s, items, top=None, t_out=None, sfx=DEFAULT, name="sp"):
-    """Glass pills that pop in on their word and get a red RTL strike-through (then dim):
+    """Glass pills that pop in on their word and get a red strike-through drawn in reading
+    direction (right→left in RTL, left→right in LTR), then dim:
     items = [(text, t_in, t_strike), ...]. The thing the speaker tells you to STOP doing.
     The row is centred on the frame (x 540) and leaves with `away` at t_out (default 0.28 s
     before the scene end; False = no exit — it used to have none and hard-cut at the scene
@@ -1153,6 +1169,22 @@ def strike_pills(s, items, top=None, t_out=None, sfx=DEFAULT, name="sp"):
             s.strike("#" + bid, "#" + pid, t_st)
             cue("strike", "click", t_st, "normal", 0.4)
     tp = ctx.sky["top"] + 50 if top is None else top
+    # the row wraps when the pills are wider than the lane — and Latin labels are wider
+    # than Hebrew ones: a real English test wrapped "Team" onto a second row that sat on the
+    # speaker's hair. Estimate the rows (64 px type, padding 88, gap 26) and say so.
+    lane_w = grid.center_lane(ctx.G)[1]
+    rows, x = 1, 0.0
+    for label, _, _ in items:
+        w = _stack_line_em([(str(label), "kt-bold")]) * 64 + 88
+        if x and x + 26 + w > lane_w:
+            rows, x = rows + 1, w
+        else:
+            x = x + (26 if x else 0) + w
+    bottom = tp + rows * 115 + (rows - 1) * 26
+    if rows > 1 and bottom > ctx.sky["bottom"] and top is None:
+        ctx.note(f"{s.id}: the strike pills wrap to {rows} rows (≈ y {int(tp)}-{int(bottom)}), "
+                 f"past the sky (y {ctx.sky['bottom']}) onto the head — shorter labels, fewer "
+                 f"pills, or a top= lower on the chest")
     rid = s.uid(name + "row")
     if t_out is not False:
         s.away("#" + rid, r3(s.end - 0.28) if t_out is None else t_out)
@@ -1237,6 +1269,16 @@ def stack(s, lines, top=None, size=104, align="center", lead=0.04, name="h"):
     times = ctx.sync(toks, s.start, s.end)
     G = ctx.G
     gx0, _, gx1, gy1 = G["safe"]
+    # shrink-to-fit the centred lane. WHY: sized for Hebrew (narrow words), an English opener
+    # at 104 px ran ~1070 px wide and crossed both safe edges (a real LTR test). Only ever
+    # shrinks, so a line that fits keeps its size.
+    lane_w = grid.center_lane(G)[1]
+    widest = max((_stack_line_em(row) for row in rows), default=0.0) * size
+    if widest > 0.96 * lane_w:
+        new = int(size * 0.96 * lane_w / widest)
+        ctx.note(f"{s.id}: the stacked line is ~{int(widest)} px at {size} px — fitted to "
+                 f"{new} px to stay inside the {lane_w} px lane")
+        size = new
     if top is None:
         top = min(ctx.framing["chest"][0] + 15, gy1 - 12 - len(rows) * size * 1.04)
     out, k = [], 0
@@ -1253,6 +1295,30 @@ def stack(s, lines, top=None, size=104, align="center", lead=0.04, name="h"):
     cen = ' data-center="content"' if align == "center" else ""
     return Html(f'<div class="kt-stack"{cen} style="top:{r3(top)}px;font-size:{size}px;align-items:{al}">'
                 f'{"".join(out)}</div>')
+
+
+def _stack_line_em(row):
+    """One stacked line's width in em, from Heebo's measured average advances (thin 200 /
+    heavy 800): Latin lower .49/.52, upper .63/.65, Hebrew .51/.57, digits .55, space .25."""
+    em = 0.0
+    for i, (w, cls) in enumerate(row):
+        heavy = cls != "kt-thin"
+        if i:
+            em += 0.25
+        for c in str(w):
+            if "a" <= c <= "z":
+                em += 0.52 if heavy else 0.49
+            elif "A" <= c <= "Z":
+                em += 0.65 if heavy else 0.63
+            elif "\u0590" <= c <= "\u05ff":
+                em += 0.57 if heavy else 0.51
+            elif c.isdigit():
+                em += 0.55
+            elif c == " ":
+                em += 0.25
+            else:
+                em += 0.45
+    return em
 
 
 _MK = {"*": "kt-bold", "^": "kt-light", "+": "kt-white", "=": "kt-grad", "_": "kt-thin"}
@@ -1966,11 +2032,19 @@ def css(ctx):
     gx0, gy0, gx1, gy1 = G["safe"]
     rtl = ctx.dir == "rtl"
     lx, lw = grid.center_lane(G)      # x 140-940: centred on the frame (grid.centered_box)
+    # every left/right asymmetry is a substitution, so the RTL stylesheet stays exactly
+    # what it was and the LTR one is its mirror (references/languages.md)
     kw = dict(gx0=gx0, gw=gx1 - gx0, lx=lx, lw=lw, cx=G["center_x"], dir=ctx.dir,
               sky_l=ctx.sky["left"], sky_r=ctx.sky["right"], sky_t=ctx.sky["top"],
               card_t=ctx.sky["top"] + 80, card_h=690,
               fill_origin="100% 50%" if rtl else "0% 50%",
               strike_origin="100% 50%" if rtl else "0% 50%",
+              # the fill gradient starts where the fill grows from
+              fill_deg="270deg" if rtl else "90deg",
+              # chat tails sit on the bubble's outer bottom corner
+              start="right" if rtl else "left", end="left" if rtl else "right",
+              # the "you" chip: the wider padding on the avatar's side
+              asg_pad="8px 26px 12px 16px" if rtl else "8px 16px 12px 26px",
               hbig_t=round(G["safe"][1] + 890))
     out = [tokens_css(ctx.tokens)]
     for name in ("kit", "hook", "overlays"):

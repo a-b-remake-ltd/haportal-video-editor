@@ -1,6 +1,6 @@
 ---
 name: haportal-video-editor
-description: HAPORTAL - VIDEO EDITOR. Turn a raw vertical talking-head take (a real recording or an AI avatar) into a finished premium 9:16 reel for Instagram Reels, TikTok and YouTube Shorts, rendered with HyperFrames. Hebrew-first, any language. Kinetic word-by-word headlines, literal UI "designed moments" invented from each line, a hook where the frame flies into a designed world, hard-swap captions, punch-ins, generated story-driven music, tight sound design, the Reels grid, free fonts only, brand colours from a logo, a logo outro, and a full QA loop on the rendered file. Use for "ערוך לי סרטון", "תערוך את הרילס", "תעשה מזה רילס", "edit my video into a reel". Not for long-form, horizontal or podcast-episode edits, or a plain trim of one clip.
+description: HAPORTAL - VIDEO EDITOR. Turn a raw vertical talking-head take (a real recording or an AI avatar) into a finished premium 9:16 reel for Instagram Reels, TikTok and YouTube Shorts, rendered with HyperFrames. Any language, detected automatically (right-to-left or left-to-right layout follows it; Hebrew gets its own transcriber and rules). Kinetic word-by-word headlines, literal UI "designed moments" invented from each line, a hook where the frame flies into a designed world, hard-swap captions, punch-ins, generated story-driven music, tight sound design, the Reels grid, free fonts only, brand colours from a logo, a logo outro, and a full QA loop on the rendered file. Use for "ערוך לי סרטון", "תערוך את הרילס", "תעשה מזה רילס", "edit my video into a reel". Not for long-form, horizontal or podcast-episode edits, or a plain trim of one clip.
 ---
 
 # HAPORTAL - VIDEO EDITOR
@@ -42,7 +42,10 @@ Re-read this file at the start of every round.
 
 ## The session
 
-1. **Inventory.** ffprobe the raw (keep its native fps: 25 for most avatar renders, 30 for phone
+1. **Inventory and language.** The take's language is detected first (pipeline step 1:
+   `detect_language.py`, also run automatically by xcheck.py), and the whole layout reads in
+   its direction (`references/languages.md`). If it is unsure it exits 2: ask the user which
+   language, then `--set <code>`. Then ffprobe the raw (keep its native fps: 25 for most avatar renders, 30 for phone
    footage). A take kept whole keeps that rate; a cut A-roll is always 25 fps. Set
    `project.fps` in config.json to the A-roll's rate: the render uses it, and preflight fails
    when the master, the config and the A-roll disagree. If `project.md` exists, summarise the
@@ -54,7 +57,7 @@ Re-read this file at the start of every round.
    `line`, `impact`), plus the line under the logo and the handle (both optional, the
    user's exact words; if the logo already has words under its mark, suggest no tagline).
    Wording in `references/outro.md` §1. No answer → no outro.
-3. **Transcribe, cross-check, correct.** Two engines. Captions show the intended, correctly
+3. **Transcribe, cross-check, correct.** Two engines, chosen by the language. Captions show the intended, correctly
    spelled words; timings come from the audio. List every correction for the final report.
 4. **Framing map.** Measure the head, face, chin, chest and free zones before designing anything.
    If it prints `FALLBACK`, those numbers are house defaults: correct them from the sheet.
@@ -107,7 +110,8 @@ Re-read this file at the start of every round.
 | Adapting to a reference video | `references/reference-analysis.md` | `analyze_reference.py`, `apply_style.py` |
 | Generated music, the calibrated bed, the SFX library and placement, mastering | `references/sound.md` | `music.py`, `bed.py`, `sfx.py`, `finish.py` |
 | The QA loop and the final checklist | `references/qa.md` | `preflight_qa.py`, `qa_frames.py` |
-| Hebrew transcription, captions and cutting | `references/hebrew.md`, `references/captions.md` | `transcribe.py`, `xcheck.py`, `captions.py` |
+| Language detection, direction (RTL/LTR) and per-language rules | `references/languages.md` | `detect_language.py` |
+| Transcription and captions; Hebrew specifics | `references/captions.md`, `references/hebrew.md` | `transcribe.py`, `xcheck.py`, `captions.py` |
 | Cutting a real recording | `references/cutting.md` | `cut_aroll.py` |
 
 **Precedence:** the user's explicit request > brand (logo, fonts) > reference > house defaults.
@@ -133,35 +137,38 @@ a quiet procedural bed (`--procedural`), or no music. Say which, plainly.
 ## The pipeline, in order
 
 ```bash
-# 1. the A-roll
+# 1. the language: code + direction into config.json (exit 2 = unsure → ask, then --set <code>)
+python3 $S/scripts/detect_language.py raw.mp4 --apply          # xcheck.py runs it too if skipped
+
+# 2. the A-roll
 python3 $S/scripts/cut_aroll.py --src raw.mp4 --whole          # an avatar or clean single take
-#   a real recording with retakes: run xcheck.py (step 2) on the raw FIRST, so the cut sees
+#   a real recording with retakes: run xcheck.py (step 3) on the raw FIRST, so the cut sees
 #   the words; then --plan, write chunks.json, then --chunks chunks.json. The cut fails
 #   unless the A-roll's audio is in sync with the raw at every boundary (references/cutting.md)
 
-# 2. words: two engines, diff, corrections → src/raw_words.json, then onto the A-roll timeline
+# 3. words: two engines, diff, corrections → src/raw_words.json, then onto the A-roll timeline
 python3 $S/scripts/xcheck.py raw.mp4                           # writes src/transcript_diff.md
 #   fill src/corrections.json (intended spelling), then: xcheck.py raw.mp4 --apply-only
 python3 $S/scripts/map_words.py                                # src/raw_words.json → src/words.json
 
-# 3. framing + style
+# 4. framing + style
 python3 $S/scripts/framing_map.py assets/aroll.mp4 --apply     # LOOK at build/framing_marked.png
 python3 $S/scripts/brand_from_logo.py logo.png --out brand/    # if there is a logo
 python3 $S/scripts/analyze_reference.py ref.mp4 --out style/   # if there is a reference
 
-# 4. the storyboard → storyboard.md, then the build files:
+# 5. the storyboard → storyboard.md, then the build files:
 #    scenes.py (the hook world + every designed moment, on the kit)
 #    media.json (headlines, any ready-made moments, "outro": {...})
 #    scripts/beats.py: leave the shipped single "std" beat unless the speaker's LAYOUT
 #    changes (a lower panel under B-roll, full-frame B-roll, a MATTED hook); the kit's
 #    flying hook world is not a beat (the file's docstring says when and how)
 
-# 5. captions, build, captions again (hide windows)
+# 6. captions, build, captions again (hide windows)
 python3 $S/scripts/captions.py
 python3 $S/scripts/build_index.py
 python3 $S/scripts/captions.py
 
-# 6. punch-ins — AFTER the first build: it reads index.html, build/scenes.json,
+# 7. punch-ins — AFTER the first build: it reads index.html, build/scenes.json,
 #    build/caption_hide.json and build/outro.json, and blocks the hook, every scene camera
 #    move (cam_shake / cam_sway / cam_push, flies), every headline window and the outro.
 #    Key words / extra blocks in punches.json: {"key": ["word", "two words"], "block": [[a, b]]}
@@ -169,7 +176,7 @@ python3 $S/scripts/plan_punches.py --apply                     # one change ever
 python3 $S/scripts/build_index.py                              # rebuild with the punches
 python3 $S/scripts/caption_layer.py
 
-# 7. sound
+# 8. sound
 python3 $S/scripts/music.py --init --turn-word "<the turn phrase>"   # then edit music_plan.json
 python3 $S/scripts/music.py                                    # 2 variants, pick, align the drop
 #   exit code 3 = the change that lands on the turn is under 6 dB: consider ONE
@@ -177,7 +184,7 @@ python3 $S/scripts/music.py                                    # 2 variants, pic
 python3 $S/scripts/bed.py --init && python3 $S/scripts/bed.py --apply
 python3 $S/scripts/build_index.py                              # rebuild with the bed
 
-# 8. gates, render, master, QA
+# 9. gates, render, master, QA
 python3 $S/scripts/validate.py --expect build/expected.json
 python3 $S/scripts/grid.py check index.html
 npx hyperframes check
@@ -198,13 +205,16 @@ python3 $S/scripts/qa_frames.py renders/final.mp4              # LOOK at every s
 - Everything readable inside x 60-940, y 220-1520, centred on the FRAME, x 540: an element
   up to 800 px wide sits on x 540; a wider one moves left just enough to keep its right edge
   on 940 (`grid.centered_box()`; the outro lockup scales down instead). Sky widgets in y 230-600.
-  Headlines right-aligned at right 160 on the chest. Bottom cards anchored to y 1520.
+  Headlines on the chest: flush right at x 920 in RTL, flush left at x 140 in LTR.
+  Everything directional mirrors with the language (`references/languages.md`).
+  Bottom cards anchored to y 1520.
 - Text sits on high-contrast areas, taken from the framing map.
 - Any camera rotation or sway is paired with a scale of at least 1.07.
 
 **Captions** (`references/captions.md`, `references/hebrew.md`)
 - Every word, with the intended spelling. 1-3 words, hard swap, never two lines, never ending on
-  a sticky word. "AI" set apart so it never reads "Al".
+  a sticky word (per-language lists, a generic rule otherwise). In Hebrew, "AI" set apart so
+  it never reads "Al".
 - Hidden under the hook world, every headline and the outro. No caption starts inside a hidden
   window (a gate).
 
@@ -244,8 +254,9 @@ it ranks first. At most 3 fix-render passes in all.
 
 ## Talking to the user
 
-- The user's language, short and plain. Many users are not technical: explain results, not
-  mechanics.
+- Speak the user's language (the one they write to you in, which may differ from the take's),
+  short and plain. Many users are not technical: explain results, not mechanics. Report the
+  detected language and its confidence in one line.
 - In Hebrew (or any RTL language), every Latin term, path or command goes on its own line.
 - Say what you measured ("the music sits 14 dB under the voice"), never "it sounds good". You
   cannot listen; report numbers and suggest one listen.

@@ -758,6 +758,7 @@ def main():
         return 0
 
     cfg = hfcfg.load(a.config)
+    hfcfg.require_language(cfg, "build_index.py")
     if not os.path.exists(a.media):
         sys.exit(f"{a.media} not found — start one with:\n"
                  f"    python3 scripts/build_index.py --example > {a.media}")

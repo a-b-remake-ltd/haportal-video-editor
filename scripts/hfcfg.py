@@ -21,8 +21,10 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULTS = {
     "project": {"name": "reel", "topic": "reel", "fps": 25, "width": 1080, "height": 1920},
-    # Hebrew first. Set code/direction for any other language; the transcriber follows.
-    "language": {"code": "he", "direction": "rtl",
+    # Any language, detected: "auto" until scripts/detect_language.py (run by the first
+    # pipeline step, xcheck.py / transcribe.py) writes the real code. direction "auto" is
+    # derived from the code by load() — no script ever sees "auto" there.
+    "language": {"code": "auto", "direction": "auto",
                  "transcriber": "auto",
                  "whisper_model": "",
                  "glossary": [],
@@ -72,7 +74,7 @@ def _deep_merge(base, over):
 
 
 def load(path=None):
-    """Return the merged config dict."""
+    """Return the merged config dict, with the language RESOLVED (resolve_language)."""
     candidates = [path, "config.json", os.environ.get("HAPORTAL_VIDEO_EDITOR_CONFIG"),
                   os.environ.get("AI_VIDEO_EDITOR_CONFIG")]
     for c in candidates:
@@ -81,10 +83,111 @@ def load(path=None):
                 user = json.load(f)
             cfg = _deep_merge(DEFAULTS, user)
             cfg["_source"] = os.path.abspath(c)
+            resolve_language(cfg)
             return cfg
-    cfg = dict(DEFAULTS)
+    cfg = _deep_merge(DEFAULTS, {})
     cfg["_source"] = "(defaults — no config.json found)"
+    resolve_language(cfg)
     return cfg
+
+
+# ------------------------------------------------------------------- language
+#
+# WHY "auto". The skill used to ship code "he" / direction "rtl" as defaults, so an English
+# speaker who skipped the config got a Hebrew transcriber (ivrit-ai reads English as
+# Hebrew), Hebrew caption rules and a right-to-left layout. Nobody should have to edit a
+# config to get their own language: the first pipeline step detects it from the audio
+# (scripts/detect_language.py) and writes code + direction into config.json. Every layout
+# decision then reads cfg["language"]["direction"], which load() always resolves to
+# "rtl" or "ltr" — never "auto".
+
+# Whisper language codes written right to left (plus the legacy "iw" for Hebrew).
+RTL_LANGS = {"he", "iw", "ar", "fa", "ur", "yi", "ps", "sd", "ug", "dv", "ckb", "syr"}
+
+
+def lang_base(code):
+    """'he-IL' / 'HE' / 'pt_BR' → 'he' / 'he' / 'pt' (the part the rules are keyed by)."""
+    c = str(code or "").strip().lower().replace("_", "-")
+    c = c.split("-")[0]
+    return "he" if c == "iw" else c
+
+
+def direction_for(code):
+    """'rtl' for Hebrew, Arabic, Persian, Urdu, Yiddish, Pashto, Sindhi…, else 'ltr'."""
+    return "rtl" if lang_base(code) in RTL_LANGS else "ltr"
+
+
+def is_hebrew(cfg_or_code):
+    """True when the (resolved) language is Hebrew. Hebrew-only rules (the "AI" slab, the
+    prefix letters, the ivrit-ai engine) key on this, never on the direction: Arabic is
+    RTL too and must not get them."""
+    if isinstance(cfg_or_code, dict):
+        L = cfg_or_code.get("language", cfg_or_code)
+        cfg_or_code = L.get("code", "")
+    return lang_base(cfg_or_code) == "he"
+
+
+def resolve_language(cfg):
+    """Normalise cfg["language"] in place: code lower-case ("auto" when empty), direction
+    "rtl"/"ltr" (an explicit value wins; "auto"/empty is derived from the code; an
+    undetected code gives "ltr"), and resolved = whether the code is known."""
+    L = cfg.setdefault("language", {})
+    code = str(L.get("code") or "auto").strip()
+    code = "auto" if code.lower() in ("", "auto", "detect") else code.lower()
+    L["code"] = code
+    d = str(L.get("direction") or "auto").strip().lower()
+    if d not in ("rtl", "ltr"):
+        d = "ltr" if code == "auto" else direction_for(code)
+    L["direction"] = d
+    L["resolved"] = code != "auto"
+    return L
+
+
+def require_language(cfg, who="this step"):
+    """The gate: exit with the one command that fixes it while the language is still "auto".
+
+    WHY a gate and not a default: a caption builder that silently assumes English on a
+    Hebrew take (or the reverse) produces wrong sticky-word breaks, a mirrored layout and a
+    wrong transcriber, and nothing downstream notices. The first pipeline step (xcheck.py /
+    transcribe.py) resolves it automatically, so this only fires when that step was skipped."""
+    L = cfg.get("language") or {}
+    if L.get("resolved") or (L.get("code") not in (None, "", "auto")):
+        return L["code"]
+    det = os.path.join(SKILL_DIR, "scripts", "detect_language.py")
+    sys.exit(f"{who}: the language is not known yet (config.json language.code is \"auto\").\n"
+             f"  detect it from the take (writes code + direction into config.json):\n"
+             f"    python3 {det} <raw video> --apply\n"
+             f"  or set it yourself, e.g. \"language\": {{\"code\": \"en\"}}")
+
+
+def lang_rule(table, cfg_or_lang, default=None):
+    """The entry of a per-language table (STICKY, OPENERS…) for the config's language:
+    the exact code, then its base ('pt-br' → 'pt'), else `default`."""
+    L = cfg_or_lang.get("language", cfg_or_lang) if isinstance(cfg_or_lang, dict) else {}
+    code = str(L.get("code", "") if L else cfg_or_lang).lower()
+    if code in table:
+        return table[code]
+    return table.get(lang_base(code), default)
+
+
+def write_language(path, code, direction=None, extra=None):
+    """Write language.code + direction (+ extra keys, e.g. the detection record) into the
+    project's config.json, keeping every other key and the file's key order. Creates a
+    minimal config.json when there is none."""
+    data = {}
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    L = data.get("language") if isinstance(data.get("language"), dict) else {}
+    L["code"] = lang_base(code) if lang_base(code) == "he" else str(code).lower()
+    L["direction"] = direction or direction_for(code)
+    for k, v in (extra or {}).items():
+        L[k] = v
+    data["language"] = L
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return L
 
 
 def arg_parser(description):
@@ -216,7 +319,58 @@ def chrome_path():
     sys.exit("Chrome/Chromium not found. Set CHROME_PATH to the binary.")
 
 
+def selftest():
+    """The language resolution and its gate — `hfcfg.py selftest`. Exit 1 on a failure."""
+    import tempfile
+    fails = []
+
+    def want(name, ok):
+        print(f"  {'✓' if ok else '✗'} {name}")
+        if not ok:
+            fails.append(name)
+
+    def res(lang):
+        return resolve_language({"language": dict(lang)})
+
+    want("auto stays auto, direction never 'auto'",
+         res({"code": "auto", "direction": "auto"})["direction"] == "ltr"
+         and res({"code": "auto"})["resolved"] is False)
+    want("he → rtl", res({"code": "he", "direction": "auto"})["direction"] == "rtl")
+    want("iw (legacy Hebrew) → rtl + Hebrew", res({"code": "iw"})["direction"] == "rtl"
+         and is_hebrew("iw"))
+    want("ar / fa / ur → rtl", all(direction_for(c) == "rtl" for c in ("ar", "fa", "ur")))
+    want("en / es / pt-BR → ltr", all(direction_for(c) == "ltr" for c in ("en", "es", "pt-BR")))
+    want("an explicit direction wins", res({"code": "en", "direction": "rtl"})["direction"] == "rtl")
+    want("Arabic is RTL but NOT Hebrew (no Hebrew-only rules)", not is_hebrew("ar"))
+    want("lang_rule falls back to the base code",
+         lang_rule({"pt": 1}, {"code": "pt-br"}) == 1 and lang_rule({"pt": 1}, {"code": "xx"}, 0) == 0)
+    # the gate: "auto" must stop a step that needs the language (negative test)
+    try:
+        require_language({"language": res({"code": "auto"})}, "selftest")
+        want("require_language refuses an undetected language", False)
+    except SystemExit as e:
+        want("require_language refuses an undetected language", "detect_language.py" in str(e))
+    want("require_language passes a known one",
+         require_language({"language": res({"code": "en"})}) == "en")
+    d = tempfile.mkdtemp(prefix="hfcfg_selftest_")
+    p = os.path.join(d, "config.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"project": {"fps": 30}, "language": {"code": "auto", "glossary": ["X"]}}, f)
+    write_language(p, "EN", extra={"detected": {"p": 0.97}})
+    back = json.load(open(p, encoding="utf-8"))
+    want("write_language keeps the other keys and writes code + direction",
+         back["project"]["fps"] == 30 and back["language"]["glossary"] == ["X"]
+         and back["language"]["code"] == "en" and back["language"]["direction"] == "ltr")
+    cfg = load(p)
+    want("load() of a written config is resolved", cfg["language"]["resolved"]
+         and cfg["language"]["direction"] == "ltr")
+    print(f"\n  hfcfg selftest: {'ok' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["selftest"]:
+        sys.exit(selftest())
     cfg = load(sys.argv[1] if len(sys.argv) > 1 else None)
     print(f"config source: {cfg.pop('_source')}")
     print(json.dumps(cfg, indent=2, ensure_ascii=False))

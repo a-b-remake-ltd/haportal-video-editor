@@ -16,10 +16,16 @@ renders exactly as visibly as the primary one whenever a glyph is missing. So:
     fallback, and every font FILE in the font dir must be accounted for. A gate cannot be
     forgotten the way a rule can.
 
+The licence gate is language-agnostic. A second, separate check is about the LANGUAGE:
+`script_issues()` fails a caption/display face that has no glyphs for the take's script
+(Bebas Neue on a Hebrew take, Heebo on a Russian one): the missing letters would come
+from whatever fallback the machine has, which is exactly how a non-free face reaches a
+render. preflight_qa.py runs it.
+
 CLI
-  fonts.py list  [--hebrew] [--role headline]
+  fonts.py list  [--hebrew | --script cyrillic] [--role headline]
   fonts.py fetch <Name> [<Name> ...] [--dest assets/fonts] [--force]
-  fonts.py pair
+  fonts.py pair  [--latin | --hebrew]          (default: the config's language)
   fonts.py guard <file.html|.css ...> [--font-dir assets/fonts]
   fonts.py css <Name> [<Name> ...] [--font-dir assets/fonts] [--prefix assets/fonts/]
 """
@@ -223,6 +229,55 @@ PAIRINGS = [
     ("Noto Sans Hebrew 700", "Noto Serif Hebrew 800", "safe multi-language set (same "
      "design family across scripts)."),
 ]
+
+# Latin-first pairings — for English and every Latin-script language. Heebo still works
+# (it has Latin), but these are drawn for Latin first. Same rule: one caption face + at
+# most one display face.
+LATIN_PAIRINGS = [
+    ("Inter 700", "Inter 900", "the neutral default: one family, the headline is the same "
+     "voice turned up. Reads at caption size on any footage."),
+    ("Inter 600", "Montserrat 800", "geometric punch words over neutral captions — "
+     "business, creators, tech."),
+    ("Poppins 600", "Poppins 800", "friendly geometric, one family — lifestyle, education."),
+    ("Inter 700", "Bebas Neue 400", "tall condensed caps for numbers and one-word punches "
+     "— sport, finance, bold statements."),
+    ("Open Sans 700", "Oswald 600", "condensed gothic headlines, humanist captions — news, "
+     "explainers."),
+    ("Space Grotesk 600", "Space Grotesk 700", "techy grotesk — AI and developer topics."),
+]
+
+# The script a language is written in (the registry's "scripts" names). Anything not
+# listed is Latin.
+LANG_SCRIPT = {"he": HE, "yi": HE, "iw": HE, "ar": "arabic", "fa": "arabic", "ur": "arabic",
+               "ps": "arabic", "ru": "cyrillic", "uk": "cyrillic", "bg": "cyrillic",
+               "sr": "cyrillic", "mk": "cyrillic", "be": "cyrillic", "kk": "cyrillic",
+               "el": "greek", "hi": "devanagari", "mr": "devanagari", "ne": "devanagari",
+               "zh": "chinese", "ja": "japanese", "ko": "korean", "th": "thai"}
+
+
+def script_for(lang_code: str) -> str:
+    c = str(lang_code or "").lower().replace("_", "-").split("-")[0]
+    return LANG_SCRIPT.get(c, LA)
+
+
+def script_issues(families: Iterable[str], lang_code: str) -> List[str]:
+    """Faces that cannot set the language's script. Only REGISTRY faces are judged (their
+    scripts are known); an imported face with a lock record is the user's call."""
+    sc = script_for(lang_code)
+    out = []
+    for fam in families:
+        fam = (fam or "").strip()
+        e = REGISTRY.get(fam)
+        if not fam or not e or sc in e["scripts"]:
+            continue
+        have = [f for f, x in REGISTRY.items() if sc in x["scripts"]]
+        out.append(f"{fam} has no {sc} glyphs for a '{lang_code}' take — the letters would "
+                   f"come from a fallback font. "
+                   + (f"Use one that has them: {', '.join(have[:5])}" if have else
+                      f"No registry face covers {sc}: fetch a free one (e.g. a Noto family) "
+                      f"with setup_assets.py --font-dir"))
+    return out
+
 
 GENERIC = {"serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
            "ui-sans-serif", "ui-serif", "ui-monospace", "ui-rounded", "math", "emoji",
@@ -957,6 +1012,8 @@ def _cmd_list(a) -> int:
     for e in REGISTRY.values():
         if a.hebrew and HE not in e["scripts"]:
             continue
+        if a.script and a.script not in e["scripts"]:
+            continue
         if a.role and a.role not in e["roles"]:
             continue
         rows.append(e)
@@ -984,6 +1041,22 @@ def _cmd_fetch(a) -> int:
 
 
 def _cmd_pair(a) -> int:
+    latin = a.latin
+    if not latin and not a.hebrew:
+        try:                                     # default: the project's language
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import hfcfg
+            latin = script_for(hfcfg.load()["language"]["code"]) == LA
+        except Exception:                        # noqa: BLE001
+            latin = False
+    if latin:
+        print("Latin-first pairings (caption/body  +  headline/display):\n")
+        for body, head, why in LATIN_PAIRINGS:
+            print(f"  {body:26} + {head:22} {why}")
+        print("\nRules: one caption face + at most ONE display face. Heebo (the house face) "
+              "has Latin too;\nthese are drawn for Latin first. Inter is the fallback in "
+              "every stack.")
+        return 0
     print("Proven Hebrew pairings (caption/body  +  headline/display):\n")
     for body, head, why in PAIRINGS:
         print(f"  {body:26} + {head:22} {why}")
@@ -991,6 +1064,31 @@ def _cmd_pair(a) -> int:
           "('AI') in\nHeebo captions go in Roboto Slab 800. Inter is the Latin fallback in "
           "every stack.")
     return 0
+
+
+def selftest() -> int:
+    """The language side of the gate (no network) — `fonts.py selftest`."""
+    fails = []
+
+    def want(nm, ok):
+        print(f"  {'✓' if ok else '✗'} {nm}")
+        if not ok:
+            fails.append(nm)
+
+    want("Heebo sets English (it has Latin)", not script_issues(["Heebo"], "en"))
+    want("Heebo sets Hebrew", not script_issues(["Heebo"], "he"))
+    bad = script_issues(["Bebas Neue"], "he")
+    want("Bebas Neue on a Hebrew take FAILS and names faces that work",
+         bad and "hebrew" in bad[0] and "Heebo" in bad[0])
+    want("Heebo on a Russian take FAILS (no Cyrillic)", bool(script_issues(["Heebo"], "ru")))
+    want("Inter on a Russian take passes", not script_issues(["Inter"], "ru"))
+    want("an imported face (not in the registry) is not judged",
+         not script_issues(["My Brand Sans"], "he"))
+    want("every Latin pairing names registry faces",
+         all(" ".join(x.split()[:-1]) in REGISTRY for b, h, _ in LATIN_PAIRINGS for x in (b, h)))
+    want("pt-BR is Latin, ar is Arabic", script_for("pt-BR") == LA and script_for("ar") == "arabic")
+    print(f"\n  fonts selftest: {'ok' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
 
 
 def _cmd_guard(a) -> int:
@@ -1022,6 +1120,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("list", help="show the registry")
     p.add_argument("--hebrew", action="store_true", help="only faces with Hebrew")
+    p.add_argument("--script", help="only faces with this script (latin, hebrew, cyrillic, "
+                                    "greek, devanagari…)")
     p.add_argument("--role", help="caption/headline/body/display/serif/rounded/"
                                   "handwritten/mono")
     p.add_argument("-v", "--verbose", action="store_true", help="print the notes too")
@@ -1029,7 +1129,10 @@ def main(argv=None) -> int:
     p.add_argument("names", nargs="+")
     p.add_argument("--dest", default=DEFAULT_DIR)
     p.add_argument("--force", action="store_true")
-    sub.add_parser("pair", help="proven Hebrew pairings")
+    p = sub.add_parser("pair", help="proven pairings (default: for the config's language)")
+    p.add_argument("--latin", action="store_true", help="Latin-first pairings")
+    p.add_argument("--hebrew", action="store_true", help="Hebrew pairings")
+    sub.add_parser("selftest", help="the language-coverage gate, negative tests")
     p = sub.add_parser("guard", help="licence gate for HTML/CSS")
     p.add_argument("files", nargs="+")
     p.add_argument("--font-dir")
@@ -1039,7 +1142,7 @@ def main(argv=None) -> int:
     p.add_argument("--prefix", default="assets/fonts/")
     a = ap.parse_args(argv)
     cmds = {"list": _cmd_list, "fetch": _cmd_fetch, "pair": _cmd_pair,
-            "guard": _cmd_guard, "css": _cmd_css}
+            "guard": _cmd_guard, "css": _cmd_css, "selftest": lambda _a: selftest()}
     if a.cmd not in cmds:
         ap.print_help()
         return 2

@@ -4,7 +4,8 @@ This is the reference the scripts, templates and other references cite as **"spe
 (for example `spec §4.3`, `spec §9.6`). The section numbers are stable: §0 … §12.
 
 It describes the house method for turning a raw vertical talking-head video (a real recording
-or an AI avatar, Hebrew-first, 1080x1920) into a finished edit at the level of a premium agency
+or an AI avatar, any language — detected, with the layout in its reading direction —
+1080x1920) into a finished edit at the level of a premium agency
 reel: kinetic word-by-word headlines, literal UI "designed moments" that illustrate each line,
 a hook where the frame flies away into a designed world, 1-3 word hard-swap captions, camera
 punch-ins, a story-driven music bed, tight sound design, an optional branded logo outro, and a
@@ -58,7 +59,7 @@ how-to for each part lives in the topic references (`storyboard.md`, `kit.md`, `
 - **Safe zone for every text and object:** x 60-940, y 220-1520.
 - **Centring:** everything centred sits on the FRAME centre, **x 540**: an element up to 800 px wide is centred on 540 (its right edge stays ≤ 940, clear of the rail); only a wider one shifts left, just enough to keep its right edge on 940. One helper, `grid.centered_box(width)`; the 800 px lane is x 140-940 (`left:140px; right:140px`). Centring on the safe zone's middle (x 500) read as off-centre next to a centred speaker. `references/grid.md`.
 - **Captions:** default band 1110-1190, centred on x 540 (plate at most 800 px). If that band lands on the speaker's chin or face in this framing, move it down onto the chest (for example 1236-1312) and say so in the report.
-- **Kinetic headlines:** right-aligned with a 160px right margin, on the chest (the one exception to centring).
+- **Kinetic headlines:** on the chest, the one exception to centring: flush right with a 160px right margin in RTL; flush left at x 140 in LTR (the rail caps the right edge at 940 either way). Every directional element mirrors with the language: `references/languages.md`.
 - **Bottom cards:** anchored to the 1520 line and growing upward, max ~300px tall.
 - **Sky widgets:** `left:140px; right:140px; top:250px` (800 px, centred), ending by y 600, and above the measured head top − 20 when the framing map has one.
 - **Paid ads:** Meta's conservative guide is 14% top, 35% bottom, 6% sides. Apply it only when the video is a paid campaign.
@@ -121,7 +122,7 @@ card:    #0D1526 body, #141C2E header strip, border 2px rgba(255,255,255,.12), r
 Glass opacity .84, not .66: lighter glass over a bright sky reads as dull grey.
 
 ### 4.2 Typography (font: Heebo variable, 100-900, bundled locally)
-- **Kinetic headline:** right-aligned, `right:160px`, top on the chest (≈1215), line-height 1.06, `white-space:nowrap`, 2 lines usually.
+- **Kinetic headline:** right-aligned, `right:160px` in RTL (`left:140px`, left-aligned, in LTR), top on the chest (≈1215), line-height 1.06, `white-space:nowrap`, 2 lines usually.
   - Sizes: 112px base, `.big` 140px, `.huge` 170px.
   - Classes: `.t-thin` weight 200 white (framing words); `.t-bold` 800 #2F9BFF (the keyword); `.t-light` 500 #8CC8FF (partner word); `.t-grad` 800 gradient text `linear-gradient(90deg,#1E8BFF,#C9B8FF 60%,#FF9ECF)` with `background-clip:text` (the closer or the emotional word).
   - Each word is its own inline-block span with **CSS `opacity:0`**. It lands on its spoken timestamp: from opacity .18, `blur(6px) grayscale(1)` to opacity 1, no blur, in 0.22s `power2.out`. No slide, no bounce. The headline hard-cuts away at the end of its window, with no exit animation.
@@ -141,7 +142,7 @@ const steps = (sel, list) => { const kids = [...document.querySelectorAll(sel + 
 - **Widgets:** enter with `drop` (or slide from the side with blur), live 1-4s, leave with `away`.
 - **State changes** ("unassigned"→"you", "open"→"in progress", counters, button labels): stack all states in one grid cell (`display:inline-grid`, children `grid-area:1/1; opacity:0`) and switch with `steps`. Never tween textContent.
 - **Stamps:** from scale 2.2-2.4, rotation -14 to -18 to scale 1, rotation -5 to -8, in 0.18s `power4.in`.
-- **Strike-through:** a red 9px bar, `transform-origin:100% 50%` (RTL), scaleX 0→1 in 0.22s, then the pill dims to opacity .45.
+- **Strike-through:** a red 9px bar, `transform-origin:100% 50%` in RTL (`0% 50%` in LTR: it grows in reading direction), scaleX 0→1 in 0.22s, then the pill dims to opacity .45.
 - **Spinners:** linear rotation for the whole life of the widget. They never stand still.
 - **Ambient life:** every full-screen world or card gets a slow drift so nothing freezes: world scale 1→1.12 across the hook, cards scale 1→1.04, small floats.
 

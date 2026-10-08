@@ -400,7 +400,8 @@ Pull frames every 0.2 s from `O − 0.4` to the end of the **encoded** file and 
 - [ ] the lockup is centred on x 540: on a late frame, left margin == right margin (±4 px)
       for the logo, the words, the tagline and the handle
 - [ ] the tagline does not repeat the logo's own words (the build warns)
-- [ ] tagline reads in the right order (RTL for Hebrew), in the brand font, one line
+- [ ] tagline reads in the right order (RTL for Hebrew, LTR for English: first word on the
+      reading side), in the brand font, one line
 - [ ] the last caption is gone from the outro start (`finish.py` prints "captions off from …")
 - [ ] the master is as long as the render (finish.py fails if the overlay truncates it)
 - [ ] audio: the vault/slam is clearly audible but not louder than the speech; the bed is

@@ -28,7 +28,9 @@ The ctx (what scenes.py gets)
   ctx.scene(id, start, end, layer="front")      a kit Scene
   ctx.punch([(t, factor), ...])   punch-in steps (tl.set on the footage); declare them FIRST
   ctx.state_at(t)                 the footage's (scale, y) at t (beats × punches × pushes)
-  ctx.G, ctx.safe, ctx.W, ctx.H, ctx.fps, ctx.end, ctx.dir
+  ctx.G, ctx.safe, ctx.W, ctx.H, ctx.fps, ctx.end
+  ctx.dir, ctx.lang, ctx.hebrew   "rtl"/"ltr" (the layout mirrors on it), the language code,
+                                  and whether the Hebrew-only rules apply
   ctx.sky                         the sky zone: left/right 140 (800 px centred on x 540),
                                   top 250, bottom 600 or the measured head top − 20
   ctx.framing                     build/framing.json (head_top, face_cx/cy, chin, chest, free_zones)
@@ -82,7 +84,12 @@ class Ctx:
         if (self.W, self.H) != (1080, 1920):
             print(f"  scenes: ! the kit is authored for 1080x1920; this frame is {self.W}x{self.H}")
         self.fps = float(cfg["project"].get("fps", 25))
-        self.dir = cfg.get("language", {}).get("direction", "rtl")
+        L = cfg.get("language", {})
+        self.dir = L.get("direction", "rtl")
+        self.lang = str(L.get("code", "he"))
+        # Hebrew-only rules (the "AI" slab, the Hebrew week) key on this, not on the
+        # direction: Arabic is RTL too
+        self.hebrew = hfcfg.is_hebrew(self.lang) if self.lang != "auto" else self.dir == "rtl"
         self.G = grid.from_config(cfg)
         self.safe = self.G["safe"]
         gx0, gy0, gx1, _ = self.safe
@@ -661,6 +668,8 @@ def selftest():
         "גידלו אותנו לחכות וזה בדיוק הכלא שבנו לנו תפסיקו לחכות תפסיקו להאשים".split())]
     root = tempfile.mkdtemp(prefix="scenes_selftest_")
     cfg = hfcfg.load(None)
+    cfg["language"].update({"code": "he", "direction": "auto"})   # the Hebrew take above
+    hfcfg.resolve_language(cfg)
     ctx = Ctx(cfg, {}, 12.0, None, root, words)
     k = kit
     # the sky is centred on the frame: left == right
@@ -726,6 +735,52 @@ def selftest():
     s = ctx2.scene("cw", 1.0, 3.0)
     h = k.widget(s, k.calendar(s, "ev"), eyebrow="יומן")
     want("calendar widget gets --kt-avail", "--kt-avail:154px" in h, re.findall(r"--kt-avail:\d+px", h))
+    # ---- direction (references/languages.md): the same kit, mirrored for an LTR language
+    os.remove(os.path.join(root, "build", "framing.json"))
+    css_he = kit.css(ctx)
+    want("RTL stylesheet unchanged: strike from the right, chat tail bottom-right",
+         "transform-origin: 100% 50%; opacity: 0; }" in css_he
+         and "kt-in { align-self: flex-start; background: rgba(255,255,255,.14); "
+             "border-bottom-right-radius" in css_he and "linear-gradient(270deg" in css_he)
+    want("Hebrew text: Latin isolated, 'AI' slabbed", 'class="kt-ltr kt-ai"' in kit.text("ה-AI", ctx))
+    en_words = [[0.2 * i, 0.2 * i + 0.18, w] for i, w in enumerate(
+        "they raised us to wait and that is the prison we built stop waiting".split())]
+    cfg_en = hfcfg.load(None)
+    cfg_en["language"].update({"code": "en", "direction": "auto"})
+    hfcfg.resolve_language(cfg_en)
+    cx = Ctx(cfg_en, {}, 12.0, None, root, en_words)
+    css_en = kit.css(cx)
+    want("LTR: the scene flows left to right", "direction: ltr;" in css_en)
+    want("LTR: strike and fills grow from the LEFT", css_en.count("transform-origin: 0% 50%") >= 2
+         and "100% 50%" not in css_en.split(".kt-strike")[1][:200])
+    want("LTR: chat tails mirrored (in → bottom-left, out → bottom-right)",
+         "kt-in { align-self: flex-start; background: rgba(255,255,255,.14); "
+         "border-bottom-left-radius" in css_en
+         and "kt-out { align-self: flex-end; background: var(--eblue); border-bottom-right-radius" in css_en)
+    want("LTR: the fill gradient starts on the left", "linear-gradient(90deg, var(--eblue)" in css_en)
+    want("LTR text is plain (no bdi, no slab)", kit.text("AI tools", cx) == "AI tools")
+    s = cx.scene("wk", 1.0, 3.0)
+    h = k.week(s)
+    want("LTR week defaults to M T W …", ">M</span>" in h and "א" not in h)
+    s = cx.scene("cal", 1.0, 3.0)
+    h = k.calendar(s, "launch", ["planned", "moved"], moves=[1.5], never="never", never_t=2.0)
+    want("LTR calendar: the event starts on the LEFT and moves right",
+         re.search(r'kt-evt" id="cal-cale" style="left:0(\.0)?px', h) is not None
+         and any(re.search(r"\{ x: 0 \}, \{ x: \d", ln) for ln in s.lines), s.lines)
+    want("LTR calendar: the stamp lands on the right (where the event went)",
+         re.search(r'kt-stampw" data-layout-allow-overlap style="left:578', h) is not None,
+         re.findall(r'kt-stampw[^>]*', h))
+    # wider Latin labels wrap the strike-pill row; with a high head that lands on the hair
+    json.dump({"head_top": 476}, open(os.path.join(root, "build", "framing.json"), "w"))
+    cx2 = Ctx(cfg_en, {}, 12.0, None, root, en_words)
+    s = cx2.scene("sp3", 1.0, 3.0)
+    k.strike_pills(s, [("Editor", 1.1, 1.5), ("Budget", 1.2, 1.6), ("Team", 1.3, 1.7)])
+    want("3 English pills that wrap onto the head are named", any("wrap to 2 rows" in x
+                                                                   for x in cx2.notes), cx2.notes)
+    s = cx2.scene("sp4", 1.0, 3.0)
+    n0 = len(cx2.notes)
+    k.strike_pills(s, [("Editor", 1.1, 1.5), ("Team", 1.3, 1.7)])
+    want("2 pills on one row: no note", len(cx2.notes) == n0, cx2.notes[n0:])
     for f in fails:
         print(f"  ✗ {f}")
     print(f"  scenes/kit selftest: {'FAIL' if fails else 'ok'} ({n[0] - len(fails)}/{n[0]})")

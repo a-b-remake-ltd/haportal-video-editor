@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Word-level transcription — free, local, Hebrew first.
+"""Word-level transcription — free, local, any language (Hebrew gets its own model).
 
     python3 scripts/transcribe.py raw.mp4                       # → src/aroll.json + src/words.json
     python3 scripts/transcribe.py raw.mp4 --out build/raw.json  # → build/raw.json + build/raw_words.json
@@ -9,6 +9,9 @@
 
 WHY each choice:
 
+* the language comes first: with config `language.code: "auto"` (the default) this script
+  runs scripts/detect_language.py on the first file and writes the code + direction into
+  config.json before anything is transcribed (it exits 2 and asks when it is unsure).
 * engine `auto` picks by language. Hebrew → `ivrit-ai/whisper-large-v3-turbo-ct2` on
   faster-whisper: ivrit.ai's Hebrew fine-tune of Whisper. Vanilla Whisper mangles Hebrew
   (spelling, prefixes, names); this one reads it like a native. Other languages →
@@ -101,15 +104,22 @@ def resolve_engine(engine="auto", lang="he", model=None):
 
     A model name that belongs to another engine (config.example.json once shipped an mlx
     repo) is ignored with a warning instead of crashing the loader with a cryptic error.
+    The ivrit-ai model is a HEBREW fine-tune: asked for on another language it would read
+    that language as Hebrew, so it is refused there (engine large-v3 instead).
     """
     engine = (engine or "auto").lower()
     model = (model or "").strip() or None
     if engine not in ENGINES:
         raise ValueError(f"unknown engine {engine!r} — one of {', '.join(ENGINES)}")
+    hebrew = hfcfg.is_hebrew(lang or "")
+    if engine == "ivrit" and not hebrew:
+        print(f"  ! engine ivrit is a Hebrew model and the language is {lang!r} — using "
+              f"Whisper large-v3 instead", file=sys.stderr)
+        engine = "auto"
     if engine == "auto":
         if model and "mlx" in model.lower():
             engine = "mlx"
-        elif (lang or "").lower().startswith(("he", "iw")):
+        elif hebrew:
             engine = "ivrit"
         elif apple_silicon() and _module_available("mlx_whisper"):
             engine = "mlx"
@@ -123,6 +133,56 @@ def resolve_engine(engine="auto", lang="he", model=None):
                       f"using {DEFAULT_MODEL[engine]}", file=sys.stderr)
             model = None
     return engine, model or DEFAULT_MODEL[engine]
+
+
+# ============================================================ glossary script
+#
+# WHY. Whisper's initial prompt is read as "the text so far": a prompt written in another
+# script pulls the decoder toward that language — a Hebrew glossary term ("קלוד קוד",
+# shipped in the example config) in front of an English take makes Whisper drift into
+# Hebrew or transliterate. So the prompt keeps only terms in the language's own script,
+# plus Latin (brand names, "AI", "Claude Code" are Latin in every language).
+
+LANG_SCRIPT = {"he": "hebrew", "yi": "hebrew", "ar": "arabic", "fa": "arabic",
+               "ur": "arabic", "ps": "arabic", "sd": "arabic", "ug": "arabic",
+               "ru": "cyrillic", "uk": "cyrillic", "bg": "cyrillic", "sr": "cyrillic",
+               "mk": "cyrillic", "be": "cyrillic", "kk": "cyrillic", "mn": "cyrillic",
+               "el": "greek", "zh": "han", "ja": "han", "ko": "hangul", "hi": "devanagari",
+               "mr": "devanagari", "ne": "devanagari", "th": "thai", "ka": "georgian",
+               "hy": "armenian", "bn": "bengali", "ta": "tamil", "am": "ethiopic"}
+_SCRIPT_RANGES = [("hebrew", 0x0590, 0x05FF), ("arabic", 0x0600, 0x06FF),
+                  ("arabic", 0x0750, 0x077F), ("arabic", 0xFB50, 0xFDFF),
+                  ("arabic", 0xFE70, 0xFEFF), ("cyrillic", 0x0400, 0x052F),
+                  ("greek", 0x0370, 0x03FF), ("armenian", 0x0530, 0x058F),
+                  ("devanagari", 0x0900, 0x097F), ("bengali", 0x0980, 0x09FF),
+                  ("tamil", 0x0B80, 0x0BFF), ("thai", 0x0E00, 0x0E7F),
+                  ("georgian", 0x10A0, 0x10FF), ("ethiopic", 0x1200, 0x137F),
+                  ("hangul", 0xAC00, 0xD7AF), ("han", 0x3040, 0x30FF),
+                  ("han", 0x4E00, 0x9FFF)]
+
+
+def script_of(term):
+    """The writing system of the first letter in `term` ("latin" for A-Z and Latin
+    accents), or None for a term with no letters (a number)."""
+    for ch in str(term):
+        if not ch.isalpha():
+            continue
+        o = ord(ch)
+        for nm, a, b in _SCRIPT_RANGES:
+            if a <= o <= b:
+                return nm
+        return "latin" if o < 0x0250 or 0x1E00 <= o <= 0x1EFF else "other"
+    return None
+
+
+def glossary_for(terms, lang):
+    """(kept, dropped): the glossary terms that may go into this language's prompt."""
+    own = LANG_SCRIPT.get(hfcfg.lang_base(lang), "latin")
+    kept, dropped = [], []
+    for t in terms:
+        sc = script_of(t)
+        (kept if sc in (None, "latin", own) else dropped).append(t)
+    return kept, dropped
 
 
 def env_key(name):
@@ -636,11 +696,41 @@ def output_paths(out=None, words=None):
     return out, words
 
 
+def selftest():
+    """Language-dependent choices, no model needed — `transcribe.py selftest`."""
+    fails = []
+
+    def want(nm, ok):
+        print(f"  {'✓' if ok else '✗'} {nm}")
+        if not ok:
+            fails.append(nm)
+
+    kept, dropped = glossary_for(["AI", "Claude Code", "קלוד קוד", "2026"], "en")
+    want("an English prompt drops the Hebrew-script term, keeps Latin and numbers",
+         kept == ["AI", "Claude Code", "2026"] and dropped == ["קלוד קוד"])
+    kept, dropped = glossary_for(["AI", "קלוד קוד"], "he")
+    want("a Hebrew prompt keeps Hebrew and Latin", kept == ["AI", "קלוד קוד"] and not dropped)
+    kept, dropped = glossary_for(["ChatGPT", "Привет", "ذكاء"], "ar")
+    want("an Arabic prompt keeps Arabic + Latin, drops Cyrillic",
+         kept == ["ChatGPT", "ذكاء"] and dropped == ["Привет"])
+    want("Hebrew → the ivrit-ai engine", resolve_engine("auto", "he")[0] == "ivrit")
+    eng, mdl = resolve_engine("auto", "en")
+    want("English → a large-v3 engine, never ivrit", eng in ("mlx", "faster")
+         and "large-v3" in mdl and "ivrit" not in mdl)
+    want("an explicit ivrit request on English is refused (large-v3 instead)",
+         resolve_engine("ivrit", "en")[0] != "ivrit")
+    print(f"\n  transcribe selftest: {'ok' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
 def main():
+    if sys.argv[1:2] == ["selftest"]:
+        return selftest()
     ap = hfcfg.arg_parser(__doc__.split("\n\n")[0])
     ap.add_argument("media", nargs="+", help="audio/video file(s)")
     ap.add_argument("--engine", choices=ENGINES, help="default: config language.transcriber")
-    ap.add_argument("--lang", help="language code (default: config language.code, he)")
+    ap.add_argument("--lang", help="language code (default: config language.code; \"auto\" "
+                                   "detects it and writes it into config.json)")
     ap.add_argument("--model", help="override the engine's model")
     ap.add_argument("--out", default=None,
                     help="whisper-style json (one file). Default: src/aroll.json")
@@ -664,11 +754,22 @@ def main():
     a = ap.parse_args()
     cfg = hfcfg.load(a.config)
     L = cfg["language"]
-    lang = a.lang or L.get("code") or "he"
+    hfcfg.require("ffmpeg", "ffprobe")
+    lang = (a.lang or "").strip().lower() or L.get("code") or "auto"
+    if lang == "auto":
+        # the first pipeline step resolves the language (scripts/detect_language.py): it
+        # picks the engine below, so it has to be known before anything is transcribed
+        hfcfg.ensure_deps(["faster_whisper", "numpy"])
+        import detect_language
+        lang = detect_language.ensure(a.media[0], a.config)
     engine = a.engine or L.get("transcriber") or "auto"
     model = a.model or L.get("whisper_model") or None
     glossary = list(L.get("glossary") or []) + [t for t in a.glossary.split(",") if t.strip()]
-    hfcfg.require("ffmpeg", "ffprobe")
+    glossary, dropped = glossary_for(glossary, lang)
+    if dropped:
+        print(f"  glossary: left out {len(dropped)} term(s) written in another script than "
+              f"{lang} ({', '.join(dropped[:6])}) — a prompt in the wrong script pulls Whisper "
+              f"toward that language")
 
     if a.compare is not None:
         names = [x.strip() for x in a.compare.split(",") if x.strip()]
